@@ -124,6 +124,7 @@ func processFileWithMetadata(path, class string, provider plugins.AIProvider, cu
 	if err != nil {
 		return state.Note{}, plugins.GenerateResult{}, fmt.Errorf("AI call: %w", err)
 	}
+	response = sanitizeAIYAML(response)
 
 	var result rawNoteResult
 	if err := yaml.Unmarshal([]byte(response), &result); err != nil {

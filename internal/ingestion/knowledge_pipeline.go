@@ -215,14 +215,119 @@ func composeKnowledge(note state.Note, provider plugins.AIProvider, cfg *config.
 	if err != nil {
 		return composedKnowledge{}, plugins.GenerateResult{}, err
 	}
+	response = sanitizeComposeYAML(response)
 	var parsed composedKnowledge
 	if err := yaml.Unmarshal([]byte(response), &parsed); err != nil {
-		return composedKnowledge{}, usage, fmt.Errorf("parse compose YAML: %w", err)
+		return composedKnowledge{}, usage, fmt.Errorf("parse compose YAML: %w\nResponse was:\n%s", err, response)
 	}
 	if len(parsed.Sections) == 0 {
 		return composedKnowledge{}, usage, fmt.Errorf("compose returned no sections")
 	}
 	return parsed, usage, nil
+}
+
+func sanitizeComposeYAML(response string) string {
+	cleaned := sanitizeAIYAML(response)
+	if cleaned == "" {
+		return cleaned
+	}
+
+	if idx := indexOfTopLevelSections(cleaned); idx > 0 {
+		cleaned = strings.TrimSpace(cleaned[idx:])
+	}
+
+	return cleaned
+}
+
+// sanitizeAIYAML removes common LLM formatting artifacts (BOM, fenced code
+// blocks, and preamble prose) before YAML parsing.
+func sanitizeAIYAML(response string) string {
+	cleaned := strings.TrimSpace(strings.TrimPrefix(response, "\ufeff"))
+	if cleaned == "" {
+		return cleaned
+	}
+
+	if fenced := extractFirstFencedBlock(cleaned); fenced != "" {
+		cleaned = fenced
+	}
+
+	if idx := indexOfFirstTopLevelKey(cleaned); idx > 0 {
+		cleaned = strings.TrimSpace(cleaned[idx:])
+	}
+
+	return cleaned
+}
+
+func indexOfFirstTopLevelKey(text string) int {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	if startsWithTopLevelKey(normalized) {
+		return 0
+	}
+	lines := strings.Split(normalized, "\n")
+	offset := 0
+	for _, line := range lines {
+		if startsWithTopLevelKey(line) {
+			return offset
+		}
+		offset += len(line) + 1
+	}
+	return -1
+}
+
+func startsWithTopLevelKey(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "-") {
+		return false
+	}
+	colon := strings.Index(line, ":")
+	if colon <= 0 {
+		return false
+	}
+	key := strings.TrimSpace(line[:colon])
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func extractFirstFencedBlock(text string) string {
+	start := strings.Index(text, "```")
+	if start == -1 {
+		return ""
+	}
+	afterStart := text[start+3:]
+	newline := strings.Index(afterStart, "\n")
+	if newline == -1 {
+		return ""
+	}
+	bodyStart := start + 3 + newline + 1
+	rest := text[bodyStart:]
+	end := strings.Index(rest, "```")
+	if end == -1 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
+func indexOfTopLevelSections(text string) int {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	if strings.HasPrefix(normalized, "sections:") {
+		return 0
+	}
+	needle := "\nsections:"
+	idx := strings.Index(normalized, needle)
+	if idx == -1 {
+		return -1
+	}
+	return idx + 1
 }
 
 func materializeKnowledgeUnits(sectionData composedSection, note state.Note, class string) (state.Section, []state.Component) {
@@ -345,6 +450,7 @@ func reviewMergeDecision(provider plugins.AIProvider, candidate, existing state.
 	if err != nil {
 		return "", plugins.GenerateResult{}, err
 	}
+	response = sanitizeAIYAML(response)
 	var parsed struct {
 		Decision string `yaml:"decision"`
 	}

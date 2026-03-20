@@ -32,7 +32,13 @@ Notes:
 %s
 ---
 
-Return ONLY valid YAML with this exact structure (no markdown code fences, no extra text):
+Output rules:
+- Return plain YAML only.
+- Do NOT use markdown code fences.
+- Do NOT include any leading or trailing commentary.
+- The first character of your response must be i from id:.
+
+Return ONLY valid YAML with this exact structure:
 id: <url-friendly slug derived from the content>
 summary: <concise 2-3 sentence summary>
 tags:
@@ -71,7 +77,13 @@ Prefer questions that require reasoning, real-world application, or analogy.%s
 Study material:
 %s
 
-Return ONLY valid YAML (no markdown code fences, no extra text) using this exact structure:
+Output rules:
+- Return plain YAML only.
+- Do NOT use markdown code fences.
+- Do NOT include any leading or trailing commentary.
+- The first character of your response must be t from title:.
+
+Return ONLY valid YAML using this exact structure:
 title: <descriptive quiz title>
 class: %s
 tags:
@@ -113,7 +125,13 @@ func AdaptQuestions(class string, weakAreas, pastQuestions []string, customConte
 Generate 5 new questions that address these weak areas from different angles than before.
 Use real-world analogies where helpful. Focus on conceptual understanding.%s%s
 
-Return ONLY valid YAML (no markdown code fences, no extra text):
+Output rules:
+- Return plain YAML only.
+- Do NOT use markdown code fences.
+- Do NOT include any leading or trailing commentary.
+- The first character of your response must be t from title:.
+
+Return ONLY valid YAML:
 title: Adaptive Review – %s
 class: %s
 tags:
@@ -144,7 +162,13 @@ Keep the difficulty level roughly the same.%s
 
 Original question: %s
 
-Return ONLY valid YAML (no markdown code fences):
+Output rules:
+- Return plain YAML only.
+- Do NOT use markdown code fences.
+- Do NOT include any leading or trailing commentary.
+- The first character of your response must be t from type:.
+
+Return ONLY valid YAML:
 type: question
 id: <new-unique-id>
 question: <new question text>
@@ -186,6 +210,12 @@ Raw note excerpt:
 %s
 ---
 
+Output rules:
+- Return plain YAML only.
+- Do NOT use markdown code fences.
+- Do NOT include any leading or trailing commentary.
+- The first character of your response must be s from sections:.
+
 Return ONLY valid YAML with this exact structure:
 sections:
   - title: <section title>
@@ -221,6 +251,12 @@ Existing:
 title: %s
 summary: %s
 %s
+Output rules:
+- Return plain YAML only.
+- Do NOT use markdown code fences.
+- Do NOT include any leading or trailing commentary.
+- The first character of your response must be d from decision:.
+
 Return ONLY valid YAML:
 decision: <merge|keep>
 rationale: <one sentence>
