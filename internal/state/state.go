@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/studyforge/study-agent/internal/config"
@@ -17,6 +18,8 @@ import (
 type Note struct {
 	ID        string    `yaml:"id"         json:"id"`
 	Source    string    `yaml:"source"     json:"source"`
+	SourceTag string    `yaml:"source_tag" json:"source_tag,omitempty"`
+	Sources   []string  `yaml:"sources"    json:"sources,omitempty"`
 	Class     string    `yaml:"class"      json:"class"`
 	Summary   string    `yaml:"summary"    json:"summary"`
 	Tags      []string  `yaml:"tags"       json:"tags"`
@@ -114,13 +117,104 @@ func SaveNotesIndex(idx *NotesIndex) error {
 
 // AddOrUpdate replaces an existing note with the same ID or appends a new one.
 func (idx *NotesIndex) AddOrUpdate(note Note) {
+	note = normalizeSources(note)
+
+	for i, n := range idx.Notes {
+		if sameSource(n, note) {
+			idx.Notes[i] = mergeNotes(n, note)
+			return
+		}
+	}
+
 	for i, n := range idx.Notes {
 		if n.ID == note.ID {
-			idx.Notes[i] = note
+			idx.Notes[i] = mergeNotes(n, note)
 			return
 		}
 	}
 	idx.Notes = append(idx.Notes, note)
+}
+
+func sameSource(a, b Note) bool {
+	if a.Source == "" || b.Source == "" {
+		return false
+	}
+	return a.Source == b.Source
+}
+
+func normalizeSources(note Note) Note {
+	if note.Source != "" {
+		note.Sources = appendUnique(note.Sources, note.Source)
+	}
+	if note.SourceTag != "" {
+		note.Tags = appendUnique(note.Tags, "source:"+note.SourceTag)
+	}
+	note.Tags = dedupe(note.Tags)
+	note.Concepts = dedupe(note.Concepts)
+	note.Sources = dedupe(note.Sources)
+	return note
+}
+
+func mergeNotes(existing, incoming Note) Note {
+	merged := existing
+
+	if incoming.Summary != "" {
+		merged.Summary = incoming.Summary
+	}
+	if incoming.Class != "" {
+		merged.Class = incoming.Class
+	}
+	if incoming.Source != "" {
+		merged.Source = incoming.Source
+	}
+	if incoming.SourceTag != "" {
+		merged.SourceTag = incoming.SourceTag
+	}
+	if !incoming.CreatedAt.IsZero() {
+		merged.CreatedAt = incoming.CreatedAt
+	}
+
+	merged.Tags = dedupe(append(existing.Tags, incoming.Tags...))
+	merged.Concepts = dedupe(append(existing.Concepts, incoming.Concepts...))
+	merged.Sources = dedupe(append(existing.Sources, incoming.Sources...))
+
+	if merged.Source != "" {
+		merged.Sources = appendUnique(merged.Sources, merged.Source)
+	}
+	if merged.SourceTag != "" {
+		merged.Tags = appendUnique(merged.Tags, "source:"+merged.SourceTag)
+	}
+
+	return merged
+}
+
+func appendUnique(items []string, value string) []string {
+	if value == "" {
+		return items
+	}
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func dedupe(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 // ── Quiz results ─────────────────────────────────────────────────────────────

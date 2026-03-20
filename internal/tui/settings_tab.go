@@ -31,11 +31,16 @@ func (s SettingsTab) resize(width int) SettingsTab {
 
 var settingKeyList = []string{
 	"provider",
+	"embeddings.provider",
+	"embeddings.model",
 	"openai.api_key",
 	"openai.model",
 	"claude.api_key",
 	"claude.model",
+	"voyage.api_key",
+	"voyage.model",
 	"local.endpoint",
+	"local.embeddings_endpoint",
 	"local.model",
 	"sfq.command",
 	"custom_prompt_context",
@@ -52,6 +57,10 @@ func settingValue(key string, cfg *config.Config) string {
 	switch key {
 	case "provider":
 		return cfg.Provider
+	case "embeddings.provider":
+		return cfg.Embeddings.Provider
+	case "embeddings.model":
+		return cfg.Embeddings.Model
 	case "openai.api_key":
 		return cfg.OpenAI.APIKey
 	case "openai.model":
@@ -60,8 +69,14 @@ func settingValue(key string, cfg *config.Config) string {
 		return cfg.Claude.APIKey
 	case "claude.model":
 		return cfg.Claude.Model
+	case "voyage.api_key":
+		return cfg.Voyage.APIKey
+	case "voyage.model":
+		return cfg.Voyage.Model
 	case "local.endpoint":
 		return cfg.Local.Endpoint
+	case "local.embeddings_endpoint":
+		return cfg.Local.EmbeddingsEndpoint
 	case "local.model":
 		return cfg.Local.Model
 	case "sfq.command":
@@ -77,6 +92,10 @@ func applySetting(key, value string, cfg *config.Config) {
 	switch key {
 	case "provider":
 		cfg.Provider = value
+	case "embeddings.provider":
+		cfg.Embeddings.Provider = value
+	case "embeddings.model":
+		cfg.Embeddings.Model = value
 	case "openai.api_key":
 		cfg.OpenAI.APIKey = value
 	case "openai.model":
@@ -85,8 +104,14 @@ func applySetting(key, value string, cfg *config.Config) {
 		cfg.Claude.APIKey = value
 	case "claude.model":
 		cfg.Claude.Model = value
+	case "voyage.api_key":
+		cfg.Voyage.APIKey = value
+	case "voyage.model":
+		cfg.Voyage.Model = value
 	case "local.endpoint":
 		cfg.Local.Endpoint = value
+	case "local.embeddings_endpoint":
+		cfg.Local.EmbeddingsEndpoint = value
 	case "local.model":
 		cfg.Local.Model = value
 	case "sfq.command":
@@ -103,13 +128,15 @@ func isKeyConfigured(key, val string) bool {
 		return val != ""
 	case "claude.api_key":
 		return val != ""
+	case "voyage.api_key":
+		return val != ""
 	}
 	return true
 }
 
 // redactAPIKey partially hides API key values for display.
 func redactAPIKey(key, val string) string {
-	if (key == "openai.api_key" || key == "claude.api_key") && len(val) > 10 {
+	if (key == "openai.api_key" || key == "claude.api_key" || key == "voyage.api_key") && len(val) > 10 {
 		return val[:7] + strings.Repeat("*", len(val)-7)
 	}
 	return val
@@ -121,7 +148,7 @@ func redactAPIKey(key, val string) string {
 // isAPIKeyField reports whether the setting key is an API key field that is
 // managed exclusively via environment variables and must not be edited.
 func isAPIKeyField(key string) bool {
-	return key == "openai.api_key" || key == "claude.api_key"
+	return key == "openai.api_key" || key == "claude.api_key" || key == "voyage.api_key"
 }
 
 func (s SettingsTab) update(msg tea.Msg, cfg *config.Config) (SettingsTab, *orchestrator.Orchestrator, string, tea.Cmd) {
@@ -152,6 +179,8 @@ func (s SettingsTab) update(msg tea.Msg, cfg *config.Config) (SettingsTab, *orch
 				envVar := config.EnvOpenAIKey
 				if s.currentKey() == "claude.api_key" {
 					envVar = config.EnvClaudeKey
+				} else if s.currentKey() == "voyage.api_key" {
+					envVar = config.EnvVoyageKey
 				}
 				return s, nil, fmt.Sprintf("API keys are read-only here — set %s in your environment.", envVar), nil
 			}
@@ -187,10 +216,12 @@ func (s SettingsTab) view(width, height int, cfg, savedCfg *config.Config) strin
 
 		indicator := ""
 		switch {
-		case k == "openai.api_key" || k == "claude.api_key":
+		case k == "openai.api_key" || k == "claude.api_key" || k == "voyage.api_key":
 			envVar := config.EnvOpenAIKey
 			if k == "claude.api_key" {
 				envVar = config.EnvClaudeKey
+			} else if k == "voyage.api_key" {
+				envVar = config.EnvVoyageKey
 			}
 			if isKeyConfigured(k, val) {
 				indicator = " " + successStyle.Render("✓") + dimStyle.Render(" (env: "+envVar+")")
@@ -227,7 +258,7 @@ func (s SettingsTab) view(width, height int, cfg, savedCfg *config.Config) strin
 	}
 
 	listBody := clipLines(strings.Join(lines, "\n"), clamp(height/2, 8, 14))
-	hint := dimStyle.Render("↑/↓ select  •  e edit  •  s save to config.yaml  •  esc cancel\nAPI keys (read-only): set " + config.EnvOpenAIKey + " / " + config.EnvClaudeKey + " in your environment")
+	hint := dimStyle.Render("↑/↓ select  •  e edit  •  s save to config.yaml  •  esc cancel\nAPI keys (read-only): set " + config.EnvOpenAIKey + " / " + config.EnvClaudeKey + " / " + config.EnvVoyageKey + " in your environment")
 	return lipgloss.JoinVertical(lipgloss.Left,
 		bannerText,
 		renderSection("Settings", listBody, width),

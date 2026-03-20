@@ -10,7 +10,7 @@ performance, streams chat responses in-app, and integrates sfq search.
 
 - Go 1.21+
 - [`studyforge`](https://github.com/studyforge/studyforge) installed and on `$PATH`
-- An API key for OpenAI, Anthropic Claude, or a locally running Ollama instance
+- An API key for OpenAI, Anthropic Claude, VoyageAI, or a locally running Ollama instance
 
 ---
 
@@ -109,6 +109,10 @@ sfa adapt linear-algebra
 ```yaml
 provider: openai          # openai | claude | local
 
+embeddings:
+  provider: openai        # openai | voyage | local
+  model: text-embedding-3-small
+
 openai:
   api_key: sk-...
   model: gpt-4o
@@ -117,8 +121,13 @@ claude:
   api_key: sk-ant-...
   model: claude-3-5-sonnet-20241022
 
+voyage:
+  api_key: pa-...
+  model: voyage-3-large
+
 local:
   endpoint: http://localhost:11434  # Ollama base URL or OpenAI-compatible base URL
+  embeddings_endpoint: http://localhost:8000/v1/embeddings
   model: llama3
 
 sfq:
@@ -140,12 +149,14 @@ For stronger security (CI, shared machines, dotfile repos), set keys as environm
 | --- | --- |
 | `OPENAI_API_KEY_SFA` | OpenAI |
 | `ANTHROPIC_API_KEY_SFA` | Anthropic Claude |
+| `VOYAGE_API_KEY_SFA` | VoyageAI |
 
 API keys are **exclusively** sourced from these environment variables — they are never read from `config.yaml` and are always stripped before any write to disk. The `api_key` fields in `config.yaml` will always be empty. A good place to set the vars is your shell profile (`~/.bashrc`, `~/.zshrc`):
 
 ```bash
 export OPENAI_API_KEY_SFA="sk-..."
 export ANTHROPIC_API_KEY_SFA="sk-ant-..."
+export VOYAGE_API_KEY_SFA="pa-..."
 ```
 
 ---

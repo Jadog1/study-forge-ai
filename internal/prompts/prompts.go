@@ -156,6 +156,77 @@ tags:
 `, concept, extra, originalQuestion)
 }
 
+// ComposeKnowledge asks the model to decompose a note into learning sections
+// and granular components.
+func ComposeKnowledge(noteSummary, noteContent, class, sourcePath, customContext string) string {
+	var contextParts []string
+	if class != "" {
+		contextParts = append(contextParts, "Class: "+class)
+	}
+	if sourcePath != "" {
+		contextParts = append(contextParts, "Source path: "+sourcePath)
+	}
+	if customContext != "" {
+		contextParts = append(contextParts, "Additional instructions:\n"+customContext)
+	}
+
+	ctx := strings.Join(contextParts, "\n")
+	if ctx != "" {
+		ctx += "\n\n"
+	}
+
+	return fmt.Sprintf(`You are composing study knowledge units from notes.
+%sNote summary:
+---
+%s
+---
+
+Raw note excerpt:
+---
+%s
+---
+
+Return ONLY valid YAML with this exact structure:
+sections:
+  - title: <section title>
+    summary: <section summary>
+    tags:
+      - <tag>
+    concepts:
+      - <concept>
+    components:
+      - kind: <formula|concept|definition|example|procedure|fact>
+        content: <single granular learning item>
+        tags:
+          - <tag>
+        concepts:
+          - <concept>
+`, ctx, noteSummary, noteContent)
+}
+
+// ReviewConsolidation asks the model whether to merge a candidate with an
+// existing knowledge unit.
+func ReviewConsolidation(candidateTitle, candidateSummary, existingTitle, existingSummary, customContext string) string {
+	extra := ""
+	if customContext != "" {
+		extra = "\nAdditional instructions:\n" + customContext + "\n"
+	}
+
+	return fmt.Sprintf(`You are reviewing two learning units for consolidation.
+Candidate:
+title: %s
+summary: %s
+
+Existing:
+title: %s
+summary: %s
+%s
+Return ONLY valid YAML:
+decision: <merge|keep>
+rationale: <one sentence>
+`, candidateTitle, candidateSummary, existingTitle, existingSummary, extra)
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func buildNotesBlock(summaries []string) string {

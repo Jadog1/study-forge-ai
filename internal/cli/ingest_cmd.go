@@ -34,7 +34,24 @@ var ingestCmd = &cobra.Command{
 		}
 		fmt.Println(" ...")
 
-		notes, err := ingestion.IngestFolder(folderPath, ingestClass, orc.Provider, cfg)
+		knowledge, err := ingestion.IngestKnowledgeFolderStream(folderPath, ingestClass, orc.Provider, orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
+			if e.Label == "" {
+				return
+			}
+			status := "..."
+			if e.Done {
+				if e.Err != nil {
+					status = "✗"
+				} else {
+					status = "✓"
+				}
+			}
+			if e.Detail != "" {
+				fmt.Printf("  %s %s: %s\n", status, e.Label, e.Detail)
+				return
+			}
+			fmt.Printf("  %s %s\n", status, e.Label)
+		})
 		if err != nil {
 			return err
 		}
@@ -43,14 +60,14 @@ var ingestCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		for _, n := range notes {
+		for _, n := range knowledge.Notes {
 			idx.AddOrUpdate(n)
 		}
 		if err := state.SaveNotesIndex(idx); err != nil {
 			return fmt.Errorf("save notes index: %w", err)
 		}
 
-		fmt.Printf("✓ Ingested %d note(s). Index updated.\n", len(notes))
+		fmt.Printf("✓ Ingested %d note(s). Sections: %d. Components: %d. Usage events: %d.\n", len(knowledge.Notes), knowledge.SectionsAdded, knowledge.ComponentsAdded, knowledge.UsageEvents)
 		return nil
 	},
 }

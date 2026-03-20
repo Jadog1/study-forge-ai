@@ -23,28 +23,58 @@ var supportedExts = map[string]bool{
 	".rst": true,
 }
 
+// ProgressEvent reports ingestion stage updates for UI/CLI consumers.
+type ProgressEvent struct {
+	Label  string
+	Detail string
+	Done   bool
+	Err    error
+}
+
 // IngestFolder processes every supported file inside folderPath using the
 // supplied AI provider. Notes are associated with class when not empty.
 // Caller is responsible for persisting the returned notes to the index.
 func IngestFolder(folderPath, class string, provider plugins.AIProvider, cfg *config.Config) ([]state.Note, error) {
+	return IngestFolderStream(folderPath, class, provider, cfg, nil)
+}
+
+// IngestFolderStream behaves like IngestFolder but emits incremental progress
+// events via onProgress when provided.
+func IngestFolderStream(folderPath, class string, provider plugins.AIProvider, cfg *config.Config, onProgress func(ProgressEvent)) ([]state.Note, error) {
+	emit := func(event ProgressEvent) {
+		if onProgress != nil {
+			onProgress(event)
+		}
+	}
+
+	emit(ProgressEvent{Label: "Discover files", Detail: folderPath})
 	files, err := collectFiles(folderPath)
 	if err != nil {
+		emit(ProgressEvent{Label: "Discover files", Detail: folderPath, Done: true, Err: err})
 		return nil, fmt.Errorf("collect files from %q: %w", folderPath, err)
 	}
+	emit(ProgressEvent{Label: "Discover files", Detail: fmt.Sprintf("%d file(s)", len(files)), Done: true})
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no supported files found in %q", folderPath)
 	}
 
 	var notes []state.Note
 	for _, f := range files {
+		emit(ProgressEvent{Label: "Process file", Detail: f})
 		fmt.Printf("  → processing %s\n", f)
 		note, err := processFile(f, class, provider, cfg.CustomPromptContext)
 		if err != nil {
+			emit(ProgressEvent{Label: "Process file", Detail: f, Done: true, Err: err})
 			fmt.Printf("  ⚠  skipping %s: %v\n", f, err)
 			continue
 		}
+		emit(ProgressEvent{Label: "Process file", Detail: f, Done: true})
+		emit(ProgressEvent{Label: "Persist note", Detail: note.ID})
 		if err := saveProcessedNote(note); err != nil {
+			emit(ProgressEvent{Label: "Persist note", Detail: note.ID, Done: true, Err: err})
 			fmt.Printf("  ⚠  could not save %s: %v\n", note.ID, err)
+		} else {
+			emit(ProgressEvent{Label: "Persist note", Detail: note.ID, Done: true})
 		}
 		notes = append(notes, note)
 	}
@@ -79,20 +109,25 @@ type rawNoteResult struct {
 }
 
 func processFile(path, class string, provider plugins.AIProvider, customCtx string) (state.Note, error) {
+	note, _, err := processFileWithMetadata(path, class, provider, customCtx)
+	return note, err
+}
+
+func processFileWithMetadata(path, class string, provider plugins.AIProvider, customCtx string) (state.Note, plugins.GenerateResult, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return state.Note{}, fmt.Errorf("read %q: %w", path, err)
+		return state.Note{}, plugins.GenerateResult{}, fmt.Errorf("read %q: %w", path, err)
 	}
 
 	prompt := prompts.SummarizeNote(string(content), class, customCtx)
-	response, err := provider.Generate(prompt)
+	response, usage, err := generateWithMetadata(provider, prompt)
 	if err != nil {
-		return state.Note{}, fmt.Errorf("AI call: %w", err)
+		return state.Note{}, plugins.GenerateResult{}, fmt.Errorf("AI call: %w", err)
 	}
 
 	var result rawNoteResult
 	if err := yaml.Unmarshal([]byte(response), &result); err != nil {
-		return state.Note{}, fmt.Errorf("parse AI YAML response: %w\nResponse was:\n%s", err, response)
+		return state.Note{}, usage, fmt.Errorf("parse AI YAML response: %w\nResponse was:\n%s", err, response)
 	}
 
 	// Fallback slug if the model didn't supply one.
@@ -104,12 +139,27 @@ func processFile(path, class string, provider plugins.AIProvider, customCtx stri
 	return state.Note{
 		ID:        result.ID,
 		Source:    path,
+		SourceTag: sourceTagFromPath(path),
+		Sources:   []string{path},
 		Class:     class,
 		Summary:   result.Summary,
 		Tags:      result.Tags,
 		Concepts:  result.Concepts,
 		CreatedAt: time.Now(),
-	}, nil
+	}, usage, nil
+}
+
+func sourceTagFromPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md":
+		return "markdown"
+	case ".txt":
+		return "text"
+	case ".rst":
+		return "restructuredtext"
+	default:
+		return "unknown"
+	}
 }
 
 func saveProcessedNote(note state.Note) error {

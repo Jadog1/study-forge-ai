@@ -16,13 +16,14 @@ type ChatMessage struct {
 	ActionLabel   string
 	ActionRunning bool
 	ActionFailed  bool
+	ActionEvent   string // "start" or "done"
 }
 
 // ChatTab holds all state for the Chat tab.
 type ChatTab struct {
 	messages     []ChatMessage
 	input        textinput.Model
-	scrollOffset int // messages from the bottom to scroll up by
+	scrollOffset int // lines from the bottom to scroll up by
 	autoSFQ      bool
 	sfqResult    string // most recent automatic SFQ lookup result
 }
@@ -65,14 +66,14 @@ func (c ChatTab) updateInput(msg tea.Msg, busy bool) (ChatTab, string, tea.Cmd) 
 		case "up", "pgup":
 			step := 1
 			if k.String() == "pgup" {
-				step = 4
+				step = 6
 			}
-			c.scrollOffset = min(c.scrollOffset+step, max(0, len(c.messages)-1))
+			c.scrollOffset += step
 			return c, "", nil
 		case "down", "pgdn":
 			step := 1
 			if k.String() == "pgdn" {
-				step = 4
+				step = 6
 			}
 			c.scrollOffset = max(0, c.scrollOffset-step)
 			return c, "", nil
@@ -98,6 +99,7 @@ func (c ChatTab) appendAIChunk(part string) ChatTab {
 // addError appends a styled error message to the log.
 func (c ChatTab) addError(errMsg string) ChatTab {
 	c.messages = append(c.messages, ChatMessage{Role: "system", Content: "Error: " + errMsg})
+	c.scrollOffset = 0
 	return c
 }
 
@@ -108,30 +110,22 @@ func (c ChatTab) startAction(label, detail string) ChatTab {
 		Content:       detail,
 		ActionLabel:   label,
 		ActionRunning: true,
+		ActionEvent:   "start",
 	})
 	c.scrollOffset = 0 // keep latest visible
 	return c
 }
 
-// finishAction updates the most recent matching running action with its result.
+// finishAction appends the action result so the timeline reflects when updates happened.
 func (c ChatTab) finishAction(label, detail string, err error) ChatTab {
-	for i := len(c.messages) - 1; i >= 0; i-- {
-		if c.messages[i].Role == "action" &&
-			c.messages[i].ActionLabel == label &&
-			c.messages[i].ActionRunning {
-			c.messages[i].ActionRunning = false
-			c.messages[i].Content = detail
-			c.messages[i].ActionFailed = err != nil
-			return c
-		}
-	}
-	// Not found — append a completed action entry.
 	c.messages = append(c.messages, ChatMessage{
 		Role:         "action",
 		Content:      detail,
 		ActionLabel:  label,
 		ActionFailed: err != nil,
+		ActionEvent:  "done",
 	})
+	c.scrollOffset = 0
 	return c
 }
 
@@ -190,24 +184,29 @@ func (c ChatTab) view(width, height int, providerName string, providerDisabled b
 	if c.sfqResult != "" {
 		sfqHeight = 8
 	}
-	conversationHeight := clamp(height-sfqHeight-20, 6, height-14)
-	conversation := c.renderConversation(width, conversationHeight, busy)
+	chatHeight := clamp(height-sfqHeight-15, 8, height-10)
+	chatPane := c.renderChatPane(width, chatHeight, busy)
 
 	sections := []string{
 		renderSection("Session", metaBody, width),
-		renderSection("Conversation", conversation, width),
+		renderSection("Chat", chatPane, width),
 	}
 
 	if c.sfqResult != "" {
 		relatedBody := lipgloss.NewStyle().Width(width - 6).Render(truncate(strings.TrimSpace(c.sfqResult), 400))
 		sections = append(sections, renderSection("Related notes (SFQ)", clipLines(relatedBody, 6), width))
 	}
-
-	// Render the input directly inside the section — no inner border (avoids double borders).
-	inputContent := c.input.View() + "\n" +
-		dimStyle.Render("Enter send  •  Ctrl+P actions  •  ↑/↓ scroll  •  Esc cancel")
-	sections = append(sections, renderSection("Composer", inputContent, width))
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func (c ChatTab) renderChatPane(width, height int, busy bool) string {
+	inputBlock := c.input.View() + "\n" +
+		dimStyle.Render("Enter send  •  Ctrl+P actions  •  ↑/↓ line scroll  •  Esc cancel")
+	inputHeight := lipgloss.Height(inputBlock)
+	conversationHeight := max(4, height-inputHeight-1)
+	conversation := c.renderConversation(width, conversationHeight, busy)
+	divider := dimStyle.Render(strings.Repeat("─", clamp(width-8, 12, width)))
+	return conversation + "\n" + divider + "\n" + inputBlock
 }
 
 func (c ChatTab) renderConversation(width, height int, busy bool) string {
@@ -233,31 +232,43 @@ func (c ChatTab) renderConversation(width, height int, busy bool) string {
 		messages = temp
 	}
 
-	total := len(messages)
-	maxVisible := clamp(height/3+2, 3, 10)
-	endIdx := total - c.scrollOffset
-	if endIdx <= 0 {
-		endIdx = 1
-	}
-	if endIdx > total {
-		endIdx = total
-	}
-	startIdx := endIdx - maxVisible
-	if startIdx < 0 {
-		startIdx = 0
-	}
-
-	parts := make([]string, 0, maxVisible+2)
-	if startIdx > 0 {
-		parts = append(parts, dimStyle.Render(fmt.Sprintf("  ↑ %d more above  (PgUp)", startIdx)))
-	}
-	for _, msg := range messages[startIdx:endIdx] {
+	parts := make([]string, 0, len(messages))
+	for _, msg := range messages {
 		parts = append(parts, renderChatMessage(msg, width))
 	}
-	if endIdx < total {
-		parts = append(parts, dimStyle.Render(fmt.Sprintf("  ↓ %d more below  (PgDn)", total-endIdx)))
+	lines := strings.Split(strings.Join(parts, "\n"), "\n")
+	totalLines := len(lines)
+	if totalLines <= height {
+		c.scrollOffset = 0
+		return strings.Join(lines, "\n")
 	}
-	return tailLines(strings.Join(parts, "\n"), height)
+
+	maxOffset := totalLines - height
+	if c.scrollOffset > maxOffset {
+		c.scrollOffset = maxOffset
+	}
+	if c.scrollOffset < 0 {
+		c.scrollOffset = 0
+	}
+
+	end := totalLines - c.scrollOffset
+	start := max(0, end-height)
+	visible := lines[start:end]
+
+	if start > 0 {
+		if len(visible) >= height {
+			visible = visible[1:]
+		}
+		visible = append([]string{dimStyle.Render(fmt.Sprintf("  ↑ %d lines above", start))}, visible...)
+	}
+	if end < totalLines {
+		if len(visible) >= height {
+			visible = visible[:len(visible)-1]
+		}
+		visible = append(visible, dimStyle.Render(fmt.Sprintf("  ↓ %d lines below", totalLines-end)))
+	}
+
+	return strings.Join(visible, "\n")
 }
 
 func (c ChatTab) lastAssistantEmpty() bool {
@@ -279,15 +290,15 @@ func renderChatMessage(message ChatMessage, width int) string {
 		return lipgloss.PlaceHorizontal(width-2, lipgloss.Right, block)
 	case "action":
 		var icon, name string
-		if message.ActionRunning {
+		if message.ActionEvent == "start" || message.ActionRunning {
 			icon = warnStyle.Render("⟳")
-			name = dimStyle.Render(titleCaseLabel(message.ActionLabel))
+			name = dimStyle.Render(titleCaseLabel(message.ActionLabel) + " started")
 		} else if message.ActionFailed {
 			icon = errorStyle.Render("✗")
-			name = errorStyle.Render(titleCaseLabel(message.ActionLabel))
+			name = errorStyle.Render(titleCaseLabel(message.ActionLabel) + " failed")
 		} else {
 			icon = successStyle.Render("✓")
-			name = dimStyle.Render(titleCaseLabel(message.ActionLabel))
+			name = dimStyle.Render(titleCaseLabel(message.ActionLabel) + " complete")
 		}
 		detail := ""
 		if message.Content != "" {

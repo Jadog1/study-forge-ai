@@ -13,6 +13,9 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
+
+	"github.com/studyforge/study-agent/plugins"
 )
 
 const (
@@ -49,6 +52,37 @@ func (p *Provider) Disabled() bool {
 
 // Generate sends prompt to the local model and returns the response text.
 func (p *Provider) Generate(prompt string) (string, error) {
+	result, err := p.GenerateWithMetadata(prompt)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
+}
+
+// GenerateWithMetadata sends prompt to local model and returns estimated usage.
+func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
+	text, err := p.generateRaw(prompt)
+	if err != nil {
+		return plugins.GenerateResult{}, err
+	}
+	inputTokens := len(strings.Fields(prompt))
+	outputTokens := len(strings.Fields(text))
+	return plugins.GenerateResult{
+		Text: text,
+		Usage: plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider: p.Name(),
+			Model:    p.Model,
+			At:       time.Now().UTC(),
+		},
+	}, nil
+}
+
+func (p *Provider) generateRaw(prompt string) (string, error) {
 	switch classifyEndpoint(p.Endpoint) {
 	case endpointKindOpenAI:
 		return p.generateChatCompletion(prompt, p.Endpoint)

@@ -15,6 +15,14 @@ type Result struct {
 	Score int // number of matching tags
 }
 
+// KnowledgeResult is a unified match over sections/components.
+type KnowledgeResult struct {
+	Kind      string
+	Section   state.Section
+	Component state.Component
+	Score     int
+}
+
 // ByTags returns notes that match any of the supplied tags, ranked by hit count.
 func ByTags(tags []string) ([]Result, error) {
 	idx, err := state.LoadNotesIndex()
@@ -75,6 +83,50 @@ func ByQuery(query, class string, limit int) ([]Result, error) {
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score == results[j].Score {
 			return strings.ToLower(results[i].Note.ID) < strings.ToLower(results[j].Note.ID)
+		}
+		return results[i].Score > results[j].Score
+	})
+
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// ByKnowledgeQuery returns sections/components ranked by lexical relevance.
+func ByKnowledgeQuery(query, class string, limit int) ([]KnowledgeResult, error) {
+	sectionIdx, err := state.LoadSectionIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load section index: %w", err)
+	}
+	componentIdx, err := state.LoadComponentIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load component index: %w", err)
+	}
+
+	query = strings.TrimSpace(query)
+	class = strings.TrimSpace(class)
+	tokens := tokenize(query)
+
+	var results []KnowledgeResult
+	for _, section := range sectionIdx.Sections {
+		score := sectionQueryScore(section, query, tokens, class)
+		if score > 0 {
+			results = append(results, KnowledgeResult{Kind: "section", Section: section, Score: score})
+		}
+	}
+	for _, component := range componentIdx.Components {
+		score := componentQueryScore(component, query, tokens, class)
+		if score > 0 {
+			results = append(results, KnowledgeResult{Kind: "component", Component: component, Score: score})
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			left := strings.ToLower(results[i].Kind + ":" + knowledgeResultID(results[i]))
+			right := strings.ToLower(results[j].Kind + ":" + knowledgeResultID(results[j]))
+			return left < right
 		}
 		return results[i].Score > results[j].Score
 	})
@@ -163,4 +215,85 @@ func tokenize(query string) []string {
 		tokens = append(tokens, field)
 	}
 	return tokens
+}
+
+func sectionQueryScore(section state.Section, rawQuery string, tokens []string, class string) int {
+	name := strings.ToLower(section.Title)
+	summary := strings.ToLower(section.Summary)
+	score := 0
+
+	if class != "" && strings.EqualFold(section.Class, class) {
+		score += 4
+	}
+	if rawQuery == "" {
+		return score
+	}
+
+	q := strings.ToLower(rawQuery)
+	if strings.Contains(name, q) || strings.Contains(summary, q) {
+		score += 6
+	}
+
+	tags := make(map[string]bool, len(section.Tags))
+	for _, tag := range section.Tags {
+		tags[strings.ToLower(tag)] = true
+	}
+	concepts := make(map[string]bool, len(section.Concepts))
+	for _, concept := range section.Concepts {
+		concepts[strings.ToLower(concept)] = true
+	}
+
+	for _, token := range tokens {
+		switch {
+		case tags[token], concepts[token]:
+			score += 4
+		case strings.Contains(name, token), strings.Contains(summary, token):
+			score += 2
+		}
+	}
+	return score
+}
+
+func componentQueryScore(component state.Component, rawQuery string, tokens []string, class string) int {
+	body := strings.ToLower(component.Content)
+	kind := strings.ToLower(component.Kind)
+	score := 0
+
+	if class != "" && strings.EqualFold(component.Class, class) {
+		score += 4
+	}
+	if rawQuery == "" {
+		return score
+	}
+
+	q := strings.ToLower(rawQuery)
+	if strings.Contains(body, q) || strings.Contains(kind, q) {
+		score += 5
+	}
+
+	tags := make(map[string]bool, len(component.Tags))
+	for _, tag := range component.Tags {
+		tags[strings.ToLower(tag)] = true
+	}
+	concepts := make(map[string]bool, len(component.Concepts))
+	for _, concept := range component.Concepts {
+		concepts[strings.ToLower(concept)] = true
+	}
+
+	for _, token := range tokens {
+		switch {
+		case tags[token], concepts[token]:
+			score += 4
+		case strings.Contains(body, token), strings.Contains(kind, token):
+			score += 2
+		}
+	}
+	return score
+}
+
+func knowledgeResultID(result KnowledgeResult) string {
+	if result.Kind == "component" {
+		return result.Component.ID
+	}
+	return result.Section.ID
 }

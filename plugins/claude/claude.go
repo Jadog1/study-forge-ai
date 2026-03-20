@@ -10,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/studyforge/study-agent/plugins"
 )
 
 const (
@@ -43,18 +46,27 @@ func (p *Provider) Disabled() bool {
 
 // Generate sends prompt to Anthropic and returns the assistant reply.
 func (p *Provider) Generate(prompt string) (string, error) {
+	result, err := p.GenerateWithMetadata(prompt)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
+}
+
+// GenerateWithMetadata sends prompt to Anthropic and returns text with usage.
+func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(messagesRequest{
 		Model:     p.Model,
 		MaxTokens: defaultMaxTokens,
 		Messages:  []message{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("claude: marshal request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("claude: create request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", p.APIKey)
@@ -62,26 +74,39 @@ func (p *Provider) Generate(prompt string) (string, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("claude: send request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("claude: read response: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: read response: %w", err)
 	}
 
 	var mr messagesResponse
 	if err := json.Unmarshal(raw, &mr); err != nil {
-		return "", fmt.Errorf("claude: parse response: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: parse response: %w", err)
 	}
 	if mr.Error != nil {
-		return "", fmt.Errorf("claude: API error: %s", mr.Error.Message)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: API error: %s", mr.Error.Message)
 	}
 	if len(mr.Content) == 0 {
-		return "", fmt.Errorf("claude: no content in response")
+		return plugins.GenerateResult{}, fmt.Errorf("claude: no content in response")
 	}
-	return mr.Content[0].Text, nil
+	return plugins.GenerateResult{
+		Text: mr.Content[0].Text,
+		Usage: plugins.TokenUsage{
+			InputTokens:  mr.Usage.InputTokens,
+			OutputTokens: mr.Usage.OutputTokens,
+			TotalTokens:  mr.Usage.InputTokens + mr.Usage.OutputTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider:  p.Name(),
+			Model:     fallbackModel(mr.Model, p.Model),
+			RequestID: mr.ID,
+			At:        time.Now().UTC(),
+		},
+	}, nil
 }
 
 // StreamGenerate sends prompt to Anthropic and emits buffered text chunks.
@@ -169,12 +194,27 @@ type messagesRequest struct {
 }
 
 type messagesResponse struct {
+	ID      string `json:"id,omitempty"`
+	Model   string `json:"model,omitempty"`
 	Content []struct {
 		Text string `json:"text"`
 	} `json:"content"`
+	Usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func fallbackModel(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type messageStreamEvent struct {

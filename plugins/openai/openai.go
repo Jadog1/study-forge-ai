@@ -10,11 +10,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/studyforge/study-agent/plugins"
 )
 
 const (
 	defaultModel = "gpt-4o"
 	apiURL       = "https://api.openai.com/v1/chat/completions"
+	embedAPIURL  = "https://api.openai.com/v1/embeddings"
 )
 
 // Provider sends prompts to the OpenAI Chat Completions endpoint.
@@ -41,43 +45,65 @@ func (p *Provider) Disabled() bool {
 
 // Generate sends prompt to OpenAI and returns the assistant reply.
 func (p *Provider) Generate(prompt string) (string, error) {
+	result, err := p.GenerateWithMetadata(prompt)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
+}
+
+// GenerateWithMetadata sends prompt to OpenAI and returns text with model usage.
+func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:    p.Model,
 		Messages: []message{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("openai: marshal request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("openai: create request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("openai: send request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("openai: read response: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: read response: %w", err)
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil {
-		return "", fmt.Errorf("openai: parse response: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: parse response: %w", err)
 	}
 	if cr.Error != nil {
-		return "", fmt.Errorf("openai: API error: %s", cr.Error.Message)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: API error: %s", cr.Error.Message)
 	}
 	if len(cr.Choices) == 0 {
-		return "", fmt.Errorf("openai: no choices in response")
+		return plugins.GenerateResult{}, fmt.Errorf("openai: no choices in response")
 	}
-	return cr.Choices[0].Message.Content, nil
+	return plugins.GenerateResult{
+		Text: cr.Choices[0].Message.Content,
+		Usage: plugins.TokenUsage{
+			InputTokens:  cr.Usage.PromptTokens,
+			OutputTokens: cr.Usage.CompletionTokens,
+			TotalTokens:  cr.Usage.TotalTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider:  p.Name(),
+			Model:     coalesceString(cr.Model, p.Model),
+			RequestID: cr.ID,
+			At:        time.Now().UTC(),
+		},
+	}, nil
 }
 
 // StreamGenerate sends prompt to OpenAI and emits buffered content chunks.
@@ -146,6 +172,80 @@ func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) err
 	return buffer.Flush(onChunk)
 }
 
+// Embed sends one or more texts to OpenAI and returns embedding vectors.
+func (p *Provider) Embed(input []string) ([][]float64, error) {
+	result, err := p.EmbedWithMetadata(input)
+	if err != nil {
+		return nil, err
+	}
+	return result.Vectors, nil
+}
+
+// EmbedWithMetadata sends one or more texts to OpenAI and returns vectors with usage.
+func (p *Provider) EmbedWithMetadata(input []string) (plugins.EmbedResult, error) {
+	body, err := json.Marshal(embeddingsRequest{
+		Model: p.Model,
+		Input: input,
+	})
+	if err != nil {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: marshal embeddings request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, embedAPIURL, bytes.NewReader(body))
+	if err != nil {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: create embeddings request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: send embeddings request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: read embeddings response: %w", err)
+	}
+
+	var er embeddingsResponse
+	if err := json.Unmarshal(raw, &er); err != nil {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: parse embeddings response: %w", err)
+	}
+	if er.Error != nil {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: API error: %s", er.Error.Message)
+	}
+	if len(er.Data) == 0 {
+		return plugins.EmbedResult{}, fmt.Errorf("openai: no embeddings in response")
+	}
+
+	vectors := make([][]float64, len(er.Data))
+	for _, row := range er.Data {
+		if row.Index < 0 || row.Index >= len(vectors) {
+			return plugins.EmbedResult{}, fmt.Errorf("openai: invalid embedding index %d", row.Index)
+		}
+		vectors[row.Index] = row.Embedding
+	}
+	for i, vec := range vectors {
+		if len(vec) == 0 {
+			return plugins.EmbedResult{}, fmt.Errorf("openai: missing embedding for input index %d", i)
+		}
+	}
+	return plugins.EmbedResult{
+		Vectors: vectors,
+		Usage: plugins.TokenUsage{
+			InputTokens: er.Usage.PromptTokens,
+			TotalTokens: er.Usage.TotalTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider: p.Name(),
+			Model:    coalesceString(er.Model, p.Model),
+			At:       time.Now().UTC(),
+		},
+	}, nil
+}
+
 // ── wire types ───────────────────────────────────────────────────────────────
 
 type message struct {
@@ -160,9 +260,16 @@ type chatRequest struct {
 }
 
 type chatResponse struct {
+	ID      string `json:"id,omitempty"`
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Message message `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -177,6 +284,35 @@ type chatStreamResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+type embeddingsRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embeddingsResponse struct {
+	Model string `json:"model,omitempty"`
+	Data  []struct {
+		Index     int       `json:"index"`
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+func coalesceString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type streamBuffer struct {

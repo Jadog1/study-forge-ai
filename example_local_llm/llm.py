@@ -1,6 +1,7 @@
 import os
 import json
 from threading import Thread
+from typing import Union
 
 import torch
 import uvicorn
@@ -67,6 +68,11 @@ class ChatRequest(BaseModel):
     temperature: float = 0.7
     stream: bool = False
 
+
+class EmbeddingRequest(BaseModel):
+    model: str
+    input: Union[str, list[str]]
+
 # ---- Helper ----
 def format_prompt(messages):
     # Simple chat formatting (works well with Mistral instruct)
@@ -108,6 +114,49 @@ def completion_response(content: str):
             }
         ],
     }
+
+
+def embedding_response(model_name: str, embeddings: list[list[float]], prompt_tokens: int):
+    return {
+        "object": "list",
+        "model": model_name,
+        "data": [
+            {
+                "object": "embedding",
+                "index": i,
+                "embedding": emb,
+            }
+            for i, emb in enumerate(embeddings)
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "total_tokens": prompt_tokens,
+        },
+    }
+
+
+def compute_embeddings(texts: list[str]):
+    vectors = []
+    token_count = 0
+    embed_layer = model.get_input_embeddings()
+
+    for text in texts:
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048,
+        )
+        input_ids = inputs["input_ids"].to(model.device)
+        token_count += int(input_ids.numel())
+
+        with torch.no_grad():
+            token_embeds = embed_layer(input_ids)
+            pooled = token_embeds.mean(dim=1).squeeze(0)
+
+        vectors.append(pooled.detach().float().cpu().tolist())
+
+    return vectors, token_count
 
 
 def stream_completion(req: ChatRequest):
@@ -192,6 +241,18 @@ def chat(req: ChatRequest):
     response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
     return completion_response(response_text)
+
+
+@app.post("/v1/embeddings")
+def embeddings(req: EmbeddingRequest):
+    inputs = req.input if isinstance(req.input, list) else [req.input]
+    if not inputs:
+        return {
+            "error": {"message": "input must contain at least one string"},
+        }
+
+    vectors, token_count = compute_embeddings(inputs)
+    return embedding_response(req.model, vectors, token_count)
 
 
 if __name__ == "__main__":

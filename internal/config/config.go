@@ -26,14 +26,22 @@ type InitResult struct {
 // Config is the top-level configuration structure.
 type Config struct {
 	// Provider selects the active AI backend: "openai", "claude", or "local".
-	Provider string       `yaml:"provider"`
-	OpenAI   OpenAIConfig `yaml:"openai"`
-	Claude   ClaudeConfig `yaml:"claude"`
-	Local    LocalConfig  `yaml:"local"`
-	SFQ      SFQConfig    `yaml:"sfq"`
+	Provider   string           `yaml:"provider"`
+	Embeddings EmbeddingsConfig `yaml:"embeddings"`
+	OpenAI     OpenAIConfig     `yaml:"openai"`
+	Claude     ClaudeConfig     `yaml:"claude"`
+	Voyage     VoyageConfig     `yaml:"voyage"`
+	Local      LocalConfig      `yaml:"local"`
+	SFQ        SFQConfig        `yaml:"sfq"`
 	// CustomPromptContext is appended verbatim to every AI prompt.
 	// Use it to steer output style (e.g. "prefer real-world analogies").
 	CustomPromptContext string `yaml:"custom_prompt_context,omitempty"`
+}
+
+// EmbeddingsConfig selects which provider/model to use for embeddings.
+type EmbeddingsConfig struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
 }
 
 // OpenAIConfig holds credentials and model selection for OpenAI.
@@ -48,10 +56,17 @@ type ClaudeConfig struct {
 	Model  string `yaml:"model"`
 }
 
+// VoyageConfig holds credentials and model selection for VoyageAI.
+type VoyageConfig struct {
+	APIKey string `yaml:"-"`
+	Model  string `yaml:"model"`
+}
+
 // LocalConfig points to a locally-running Ollama (or compatible) instance.
 type LocalConfig struct {
-	Endpoint string `yaml:"endpoint"`
-	Model    string `yaml:"model"`
+	Endpoint           string `yaml:"endpoint"`
+	EmbeddingsEndpoint string `yaml:"embeddings_endpoint,omitempty"`
+	Model              string `yaml:"model"`
 }
 
 // SFQConfig controls how study-agent invokes the sfq plugin search command.
@@ -153,6 +168,7 @@ func EnsureInitialized() (*InitResult, error) {
 const (
 	EnvOpenAIKey = "OPENAI_API_KEY_SFA"
 	EnvClaudeKey = "ANTHROPIC_API_KEY_SFA"
+	EnvVoyageKey = "VOYAGE_API_KEY_SFA"
 )
 
 // Load reads config.yaml from the per-user application directory.
@@ -175,6 +191,20 @@ func Load() (*Config, error) {
 	// populate from environment variables only.
 	cfg.OpenAI.APIKey = os.Getenv(EnvOpenAIKey)
 	cfg.Claude.APIKey = os.Getenv(EnvClaudeKey)
+	cfg.Voyage.APIKey = os.Getenv(EnvVoyageKey)
+	if cfg.Embeddings.Provider == "" {
+		cfg.Embeddings.Provider = "openai"
+	}
+	if cfg.Embeddings.Model == "" {
+		switch cfg.Embeddings.Provider {
+		case "voyage":
+			cfg.Embeddings.Model = cfg.Voyage.Model
+		case "local":
+			cfg.Embeddings.Model = cfg.Local.Model
+		default:
+			cfg.Embeddings.Model = "text-embedding-3-small"
+		}
+	}
 	return &cfg, nil
 }
 
@@ -195,6 +225,7 @@ func Save(cfg *Config) error {
 	sanitized := *cfg
 	sanitized.OpenAI.APIKey = ""
 	sanitized.Claude.APIKey = ""
+	sanitized.Voyage.APIKey = ""
 	data, err := yaml.Marshal(&sanitized)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -208,6 +239,10 @@ func Save(cfg *Config) error {
 func DefaultConfig() *Config {
 	return &Config{
 		Provider: "openai",
+		Embeddings: EmbeddingsConfig{
+			Provider: "openai",
+			Model:    "text-embedding-3-small",
+		},
 		OpenAI: OpenAIConfig{
 			APIKey: "",
 			Model:  "gpt-5-mini",
@@ -216,9 +251,14 @@ func DefaultConfig() *Config {
 			APIKey: "",
 			Model:  "claude-4-5-haiku",
 		},
+		Voyage: VoyageConfig{
+			APIKey: "",
+			Model:  "voyage-3-large",
+		},
 		Local: LocalConfig{
-			Endpoint: "http://localhost:8000",
-			Model:    "llama3",
+			Endpoint:           "http://localhost:8000",
+			EmbeddingsEndpoint: "http://localhost:8000/v1/embeddings",
+			Model:              "llama3",
 		},
 		SFQ: SFQConfig{
 			Command: "sfq",

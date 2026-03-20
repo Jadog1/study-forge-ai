@@ -82,23 +82,45 @@ func runSFQCmd(command, query string, auto bool) tea.Cmd {
 // runIngestCmd processes a folder of notes with the AI provider and updates
 // the notes index.
 func runIngestCmd(folderPath, class string, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
-	return func() tea.Msg {
-		notes, err := ingestion.IngestFolder(folderPath, class, orc.Provider, cfg)
+	stream := make(chan aiStreamEvent, 32)
+	go func() {
+		defer close(stream)
+
+		knowledge, err := ingestion.IngestKnowledgeFolderStream(folderPath, class, orc.Provider, orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
+			stream <- aiStreamEvent{
+				actionLabel: e.Label,
+				actionInfo:  e.Detail,
+				actionDone:  e.Done,
+				err:         e.Err,
+			}
+		})
 		if err != nil {
-			return workflowDoneMsg{err: err}
+			stream <- aiStreamEvent{err: err, done: true}
+			return
 		}
+
+		stream <- aiStreamEvent{actionLabel: "Update index", actionInfo: "loading", actionDone: false}
 		idx, idxErr := state.LoadNotesIndex()
 		if idxErr != nil {
-			return workflowDoneMsg{err: fmt.Errorf("load notes index: %w", idxErr)}
+			stream <- aiStreamEvent{err: fmt.Errorf("load notes index: %w", idxErr), done: true}
+			return
 		}
-		for _, n := range notes {
+		for _, n := range knowledge.Notes {
 			idx.AddOrUpdate(n)
 		}
 		if saveErr := state.SaveNotesIndex(idx); saveErr != nil {
-			return workflowDoneMsg{err: fmt.Errorf("save notes index: %w", saveErr)}
+			stream <- aiStreamEvent{err: fmt.Errorf("save notes index: %w", saveErr), done: true}
+			return
 		}
-		return workflowDoneMsg{summary: fmt.Sprintf("Ingested %d note(s) from %q", len(notes), folderPath)}
-	}
+		stream <- aiStreamEvent{actionLabel: "Update index", actionInfo: fmt.Sprintf("%d note(s)", len(knowledge.Notes)), actionDone: true}
+
+		stream <- aiStreamEvent{
+			part: fmt.Sprintf("Ingested %d note(s) from %q\nSections: %d\nComponents: %d\nUsage events: %d", len(knowledge.Notes), folderPath, knowledge.SectionsAdded, knowledge.ComponentsAdded, knowledge.UsageEvents),
+			done: true,
+		}
+	}()
+
+	return waitForAIStreamCmd(stream)
 }
 
 // runGenerateCmd generates a new quiz for the given class, streaming agent

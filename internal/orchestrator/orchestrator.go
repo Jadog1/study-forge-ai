@@ -5,18 +5,21 @@ package orchestrator
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/plugins"
 	claudeprovider "github.com/studyforge/study-agent/plugins/claude"
 	localprovider "github.com/studyforge/study-agent/plugins/local"
 	openaiprovider "github.com/studyforge/study-agent/plugins/openai"
+	voyageprovider "github.com/studyforge/study-agent/plugins/voyage"
 )
 
 // Orchestrator holds the active configuration and AI provider for a session.
 type Orchestrator struct {
-	Config   *config.Config
-	Provider plugins.AIProvider
+	Config            *config.Config
+	Provider          plugins.AIProvider
+	EmbeddingProvider plugins.EmbeddingProvider
 }
 
 // New builds an Orchestrator and returns an error if the selected provider is
@@ -27,14 +30,14 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	if p.Disabled() {
 		return nil, fmt.Errorf("provider %q is not configured — edit %s/%s", cfg.Provider, config.DisplayRootDir(), config.ConfigFile)
 	}
-	return &Orchestrator{Config: cfg, Provider: p}, nil
+	return &Orchestrator{Config: cfg, Provider: p, EmbeddingProvider: buildEmbeddingProvider(cfg)}, nil
 }
 
 // NewFallback builds an Orchestrator even when the selected provider is
 // disabled or unconfigured. Used by the TUI so the UI opens regardless of
 // provider state — the user can configure it in the Settings tab.
 func NewFallback(cfg *config.Config) *Orchestrator {
-	return &Orchestrator{Config: cfg, Provider: buildProvider(cfg)}
+	return &Orchestrator{Config: cfg, Provider: buildProvider(cfg), EmbeddingProvider: buildEmbeddingProvider(cfg)}
 }
 
 // buildProvider always returns a valid AIProvider (which may report Disabled()).
@@ -51,11 +54,48 @@ func buildProvider(cfg *config.Config) plugins.AIProvider {
 	}
 }
 
+func buildEmbeddingProvider(cfg *config.Config) plugins.EmbeddingProvider {
+	provider := strings.TrimSpace(strings.ToLower(cfg.Embeddings.Provider))
+	model := strings.TrimSpace(cfg.Embeddings.Model)
+
+	switch provider {
+	case "", "openai":
+		if model == "" {
+			model = "text-embedding-3-small"
+		}
+		return openaiprovider.New(cfg.OpenAI.APIKey, model)
+	case "voyage", "voyageai":
+		if model == "" {
+			model = cfg.Voyage.Model
+		}
+		return voyageprovider.New(cfg.Voyage.APIKey, model)
+	case "local":
+		endpoint := strings.TrimSpace(cfg.Local.EmbeddingsEndpoint)
+		if endpoint == "" {
+			endpoint = strings.TrimSpace(cfg.Local.Endpoint)
+		}
+		if model == "" {
+			model = cfg.Local.Model
+		}
+		return localprovider.NewEmbeddingProvider(endpoint, model)
+	default:
+		return &unknownEmbeddingProvider{name: provider}
+	}
+}
+
 // unknownProvider satisfies plugins.AIProvider for unrecognised provider names.
 type unknownProvider struct{ name string }
 
-func (u *unknownProvider) Name() string     { return u.name }
-func (u *unknownProvider) Disabled() bool   { return true }
+func (u *unknownProvider) Name() string   { return u.name }
+func (u *unknownProvider) Disabled() bool { return true }
 func (u *unknownProvider) Generate(_ string) (string, error) {
 	return "", fmt.Errorf("unknown provider %q — valid values: openai, claude, local", u.name)
+}
+
+type unknownEmbeddingProvider struct{ name string }
+
+func (u *unknownEmbeddingProvider) Name() string   { return u.name }
+func (u *unknownEmbeddingProvider) Disabled() bool { return true }
+func (u *unknownEmbeddingProvider) Embed(_ []string) ([][]float64, error) {
+	return nil, fmt.Errorf("unknown embeddings provider %q — valid values: openai, voyage, local", u.name)
 }

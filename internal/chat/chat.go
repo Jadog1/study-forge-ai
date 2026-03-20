@@ -119,6 +119,37 @@ func buildClassContext(className string) (string, error) {
 }
 
 func buildNoteContext(className, prompt string) (string, error) {
+	knowledgeResults, knowledgeErr := search.ByKnowledgeQuery(prompt, className, 6)
+	if knowledgeErr == nil && len(knowledgeResults) > 0 {
+		var b strings.Builder
+		for i, result := range knowledgeResults {
+			if result.Kind == "section" {
+				section := result.Section
+				fmt.Fprintf(&b, "[%d] section id=%s class=%s score=%d\n", i+1, section.ID, section.Class, result.Score)
+				fmt.Fprintf(&b, "title: %s\n", section.Title)
+				if len(section.Tags) > 0 {
+					fmt.Fprintf(&b, "tags: %s\n", strings.Join(section.Tags, ", "))
+				}
+				if len(section.Concepts) > 0 {
+					fmt.Fprintf(&b, "concepts: %s\n", strings.Join(section.Concepts, ", "))
+				}
+				fmt.Fprintf(&b, "summary: %s\n\n", section.Summary)
+				continue
+			}
+			component := result.Component
+			fmt.Fprintf(&b, "[%d] component id=%s class=%s score=%d\n", i+1, component.ID, component.Class, result.Score)
+			fmt.Fprintf(&b, "kind: %s\n", component.Kind)
+			if len(component.Tags) > 0 {
+				fmt.Fprintf(&b, "tags: %s\n", strings.Join(component.Tags, ", "))
+			}
+			if len(component.Concepts) > 0 {
+				fmt.Fprintf(&b, "concepts: %s\n", strings.Join(component.Concepts, ", "))
+			}
+			fmt.Fprintf(&b, "content: %s\n\n", component.Content)
+		}
+		return strings.TrimSpace(b.String()), nil
+	}
+
 	results, err := search.ByQuery(prompt, className, 4)
 	if err != nil {
 		return "", err

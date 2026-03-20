@@ -2,6 +2,8 @@
 // point for all AI backend implementations.
 package plugins
 
+import "time"
+
 // AIProvider is the common interface every AI backend must satisfy.
 // Implementations live in sub-packages: openai, claude, local.
 type AIProvider interface {
@@ -14,6 +16,37 @@ type AIProvider interface {
 	Disabled() bool
 }
 
+// TokenUsage captures token and cost details for a single provider call.
+// Cost values are optional because not all providers return them.
+type TokenUsage struct {
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	TotalTokens  int     `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+}
+
+// CallMetadata captures provider/model metadata for auditing and billing.
+type CallMetadata struct {
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	RequestID string    `json:"request_id,omitempty"`
+	At        time.Time `json:"at"`
+}
+
+// GenerateResult includes model output plus optional metadata.
+type GenerateResult struct {
+	Text     string       `json:"text"`
+	Usage    TokenUsage   `json:"usage"`
+	Metadata CallMetadata `json:"metadata"`
+}
+
+// UsageAwareAIProvider is an optional extension for providers that can return
+// model and token metadata for each text generation call.
+type UsageAwareAIProvider interface {
+	AIProvider
+	GenerateWithMetadata(prompt string) (GenerateResult, error)
+}
+
 // StreamingAIProvider is an optional extension interface for providers that
 // can emit text incrementally as it is generated.
 type StreamingAIProvider interface {
@@ -21,4 +54,29 @@ type StreamingAIProvider interface {
 	// StreamGenerate sends a plain-text prompt and invokes onChunk for each
 	// piece of generated text in order.
 	StreamGenerate(prompt string, onChunk func(string) error) error
+}
+
+// EmbeddingProvider is an optional extension interface for providers that can
+// produce numeric embeddings for one or more text inputs.
+type EmbeddingProvider interface {
+	// Name returns a human-readable identifier for the provider.
+	Name() string
+	// Disabled returns true when the provider cannot accept requests.
+	Disabled() bool
+	// Embed returns one embedding vector per input text, preserving order.
+	Embed(input []string) ([][]float64, error)
+}
+
+// EmbedResult includes vectors plus optional metadata.
+type EmbedResult struct {
+	Vectors  [][]float64  `json:"vectors"`
+	Usage    TokenUsage   `json:"usage"`
+	Metadata CallMetadata `json:"metadata"`
+}
+
+// UsageAwareEmbeddingProvider is an optional extension for embedding
+// providers that can return token/model metadata for each request.
+type UsageAwareEmbeddingProvider interface {
+	EmbeddingProvider
+	EmbedWithMetadata(input []string) (EmbedResult, error)
 }
