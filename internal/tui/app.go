@@ -1,0 +1,369 @@
+﻿// Package tui provides the interactive terminal UI for study-agent.
+// app.go wires together the model, tab components, and overlay components.
+package tui
+
+import (
+	"strings"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/internal/orchestrator"
+)
+
+// Launch starts the StudyForge TUI. The UI opens even when the AI provider is
+// not yet configured; the user can set it up inside the Settings tab.
+func Launch() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	orc := orchestrator.NewFallback(cfg)
+	m := newModel(cfg, orc)
+	_, err = tea.NewProgram(m, tea.WithAltScreen()).Run()
+	return err
+}
+
+// ── tea.Model ────────────────────────────────────────────────────────────────
+
+func (m model) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Window resize is always handled before overlays.
+	if wm, ok := msg.(tea.WindowSizeMsg); ok {
+		m = m.resize(wm.Width, wm.Height)
+		return m, nil
+	}
+
+	// Command palette overlay steals all input when visible.
+	if m.palette.visible {
+		var action string
+		var cmd tea.Cmd
+		m.palette, action, cmd = m.palette.Update(msg)
+		if action != "" {
+			m, nextCmd := m.handlePaletteAction(action)
+			return m, tea.Batch(cmd, nextCmd)
+		}
+		return m, cmd
+	}
+
+	// Workflow overlay steals all input when visible.
+	if m.workflow.visible {
+		var workflowBusy bool
+		var status string
+		var cmd tea.Cmd
+		m.workflow, workflowBusy, status, cmd = m.workflow.Update(msg, m.orc, m.cfg)
+		if status != "" {
+			m.status = status
+		}
+		m.busy = workflowBusy
+		return m, cmd
+	}
+
+	// Cross-cutting async results are routed to the right component
+	// regardless of which tab is currently active so responses are never lost.
+	switch msg := msg.(type) {
+	case aiStreamMsg:
+		if msg.actionLabel != "" {
+			if msg.actionDone {
+				m.chat = m.chat.finishAction(msg.actionLabel, msg.actionInfo, msg.err)
+				if msg.err != nil {
+					m.status = "Agent action failed"
+				} else {
+					m.status = "Agent action complete"
+				}
+			} else {
+				m.chat = m.chat.startAction(msg.actionLabel, msg.actionInfo)
+				m.status = "Agent action running…"
+			}
+			return m, waitForAIStreamCmd(msg.stream)
+		}
+		if msg.err != nil {
+			m.busy = false
+			m.status = "Chat request failed"
+			m.chat = m.chat.addError(msg.err.Error())
+			return m, nil
+		}
+		if msg.part != "" {
+			m.chat = m.chat.appendAIChunk(msg.part)
+			m.status = "Streaming response…"
+		}
+		if msg.done {
+			m.busy = false
+			m.status = "Ready"
+			if m.chat.autoSFQ && m.cfg.SFQ.Command != "" {
+				return m, runSFQCmd(m.cfg.SFQ.Command, m.chat.lastUserPrompt(), true)
+			}
+			return m, nil
+		}
+		return m, waitForAIStreamCmd(msg.stream)
+
+	case sfqDoneMsg:
+		if msg.autoSFQ {
+			// Auto-SFQ results always go to the chat tab.
+			if msg.err == nil && strings.TrimSpace(msg.text) != "" {
+				m.chat = m.chat.setAutoSFQResult(msg.text)
+			}
+			return m, nil
+		}
+		// Manual SFQ results go to the SFQ tab.
+		var status string
+		m.sfq, status = m.sfq.receiveResult(msg.text, msg.err)
+		m.busy = false
+		m.status = status
+		return m, nil
+
+	case workflowDoneMsg:
+		// Handled by workflow overlay above; this catches any that arrive late.
+		m.busy = false
+		if msg.err != nil {
+			m.status = "Workflow failed: " + msg.err.Error()
+		} else {
+			m.status = msg.summary
+		}
+		return m, nil
+	}
+
+	// Global key bindings.
+	if km, ok := msg.(tea.KeyMsg); ok {
+		s := km.String()
+		switch s {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "ctrl+p":
+			m.palette = m.palette.Open()
+			return m, nil
+		case "q":
+			if !m.isEditing(true) {
+				return m, tea.Quit
+			}
+		case "tab", "right":
+			if !m.isEditing(false) {
+				m.activeTab = (m.activeTab + 1) % tabCount
+				m.status = "Switched tab"
+				return m, nil
+			}
+		case "shift+tab", "left":
+			if !m.isEditing(false) {
+				m.activeTab = (m.activeTab + 3) % tabCount
+				m.status = "Switched tab"
+				return m, nil
+			}
+		case "esc":
+			m = m.resetFocus()
+			return m, nil
+		}
+	}
+
+	return m.routeToActiveTab(msg)
+}
+
+// routeToActiveTab passes the message to the currently focused tab.
+func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch m.activeTab {
+	case tabChat:
+		var prompt string
+		var cmd tea.Cmd
+		m.chat, prompt, cmd = m.chat.updateInput(msg, m.busy)
+		if prompt != "" {
+			m.busy = true
+			m.status = "Contacting model…"
+			return m, askAICmd(m.orc, m.cfg, m.classes.SelectedClass(), prompt)
+		}
+		return m, cmd
+
+	case tabClasses:
+		var status string
+		var cmd tea.Cmd
+		m.classes, status, cmd = m.classes.update(msg)
+		if status != "" {
+			m.status = status
+		}
+		return m, cmd
+
+	case tabSettings:
+		var newOrc *orchestrator.Orchestrator
+		var status string
+		var cmd tea.Cmd
+		m.settings, newOrc, status, cmd = m.settings.update(msg, m.cfg)
+		if newOrc != nil {
+			m.orc = newOrc
+			m.savedCfg = cloneConfig(m.cfg)
+		}
+		if status != "" {
+			m.status = status
+		}
+		return m, cmd
+
+	case tabSFQ:
+		var status string
+		var cmd tea.Cmd
+		m.sfq, status, cmd = m.sfq.updateInput(msg, m.cfg.SFQ.Command, m.busy)
+		if status != "" {
+			m.busy = true
+			m.status = status
+		}
+		return m, cmd
+	}
+	return m, nil
+}
+
+// handlePaletteAction responds to a command palette selection.
+func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
+	class := m.classes.SelectedClass()
+	switch action {
+	case "ingest":
+		m.workflow = m.workflow.Open(WorkflowIngest, class)
+	case "generate":
+		m.workflow = m.workflow.Open(WorkflowGenerate, class)
+	case "adapt":
+		m.workflow = m.workflow.Open(WorkflowAdapt, class)
+	case "new-class":
+		m.activeTab = tabClasses
+		m.classes = m.classes.EnterNewClassMode()
+		m.status = "Enter new class name, then press Enter"
+	case "add-context":
+		if class == "" {
+			m.status = "Select a class first"
+		} else {
+			m.activeTab = tabClasses
+			m.classes = m.classes.EnterAddContextMode()
+			m.status = "Enter context file path, then press Enter"
+		}
+	case "sfq-search":
+		m.activeTab = tabSFQ
+		m.status = "SFQ Search"
+	case "toggle-auto-sfq":
+		m.chat = m.chat.toggleAutoSFQ()
+		if m.chat.autoSFQ {
+			m.status = "Auto-SFQ enabled"
+		} else {
+			m.status = "Auto-SFQ disabled"
+		}
+	case "settings":
+		m.activeTab = tabSettings
+		m.status = "Settings"
+	case "provider-openai":
+		m.cfg.Provider = "openai"
+		m.orc = orchestrator.NewFallback(m.cfg)
+		m.status = "Provider set to OpenAI for this session. Press s in Settings to save."
+	case "provider-claude":
+		m.cfg.Provider = "claude"
+		m.orc = orchestrator.NewFallback(m.cfg)
+		m.status = "Provider set to Claude for this session. Press s in Settings to save."
+	case "provider-local":
+		m.cfg.Provider = "local"
+		m.orc = orchestrator.NewFallback(m.cfg)
+		m.status = "Provider set to Local/Ollama for this session. Press s in Settings to save."
+	}
+	return m, nil
+}
+
+// isEditing returns true when the user is actively filling in a form field,
+// used to suppress global shortcuts like q and tab.
+func (m model) isEditing(checkChatTyping bool) bool {
+	switch m.activeTab {
+	case tabChat:
+		return m.chat.input.Focused() && checkChatTyping
+	case tabClasses:
+		return m.classes.mode != ""
+	case tabSettings:
+		return m.settings.mode != ""
+	}
+	return false
+}
+
+// resetFocus exits any active edit modes and blurs all inputs.
+func (m model) resetFocus() model {
+	m.classes.mode = ""
+	m.classes.classInput.Blur()
+	m.classes.contextInput.Blur()
+	m.settings.mode = ""
+	m.settings.input.Blur()
+	m.status = "Editing cancelled"
+	return m
+}
+
+// ── View ─────────────────────────────────────────────────────────────────────
+
+func (m model) View() string {
+	if m.width == 0 || m.height == 0 {
+		return "Loading StudyForge UI..."
+	}
+	if m.width < 60 || m.height < 18 {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			warnBannerStyle.Render("Terminal is too small. Resize to at least 60x18."))
+	}
+
+	docWidth := clamp(m.width-8, 52, 116)
+	bodyInnerWidth := clamp(docWidth-bodyPanelStyle.GetHorizontalFrameSize(), 24, docWidth)
+	footerWidth := clamp(docWidth-footerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
+	headerWidth := clamp(docWidth-headerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
+
+	// Tab bar
+	labels := []string{"Chat", "Classes", "Settings", "SFQ Search"}
+	var parts []string
+	for i, l := range labels {
+		if i == m.activeTab {
+			parts = append(parts, activeTabStyle.Render(l))
+		} else {
+			parts = append(parts, inactiveTabStyle.Render(l))
+		}
+	}
+	headerContent := lipgloss.JoinHorizontal(lipgloss.Bottom,
+		lipgloss.JoinHorizontal(lipgloss.Bottom, parts...),
+		dimStyle.Render("  Ctrl+P actions"),
+	)
+	header := headerBarStyle.Width(headerWidth).Render(headerContent)
+
+	// Active tab body
+	// Total vertical chrome: appStyle padding=2, header=lipgloss.Height(header),
+	// bodyPanelStyle borders+padding=4, footer=4  → subtract 10 beyond header height.
+	var body string
+	bodyHeight := clamp(m.height-lipgloss.Height(header)-10, 4, m.height-14)
+	switch m.activeTab {
+	case tabChat:
+		body = m.chat.view(bodyInnerWidth, bodyHeight, m.orc.Provider.Name(), m.orc.Provider.Disabled(), m.classes.SelectedClass(), m.busy)
+	case tabClasses:
+		body = m.classes.view(bodyInnerWidth, bodyHeight)
+	case tabSettings:
+		body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
+	case tabSFQ:
+		body = m.sfq.view(bodyInnerWidth, bodyHeight)
+	}
+	body = lipgloss.NewStyle().Width(bodyInnerWidth).Height(bodyHeight).MaxWidth(bodyInnerWidth).Render(body)
+	body = bodyPanelStyle.Render(body)
+
+	footerStatus := statusBarStyle.Render("Status: " + m.status)
+	footerHints := dimStyle.Render("Tab/Shift+Tab switch  •  Ctrl+P actions  •  Esc cancel  •  q quit")
+	footerTone := infoBannerStyle
+	statusText := strings.ToLower(m.status)
+	switch {
+	case strings.Contains(statusText, "fail"), strings.Contains(statusText, "error"), strings.Contains(statusText, "cannot"):
+		footerTone = errorBannerStyle
+	case strings.Contains(statusText, "not saved"), strings.Contains(statusText, "cancel"), strings.Contains(statusText, "select"), strings.Contains(statusText, "required"):
+		footerTone = warnBannerStyle
+	}
+	footer := footerBarStyle.Width(footerWidth).Render(
+		footerTone.Render(truncateWidth(footerStatus, footerWidth-2)) + "\n" +
+			lipgloss.NewStyle().Width(footerWidth-2).MaxWidth(footerWidth-2).Render(footerHints),
+	)
+
+	mainView := appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
+
+	// Overlays are rendered centered on top of the main view.
+	if m.palette.visible {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			m.palette.View(m.width, m.height))
+	}
+	if m.workflow.visible {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			m.workflow.View(m.width, m.height))
+	}
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, mainView)
+}

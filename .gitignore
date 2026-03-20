@@ -1,0 +1,18 @@
+# Binaries
+study-agent.exe
+sfa.exe
+
+# Build cache
+/dist/
+
+# Legacy local workspace state (contains secrets – never commit)
+.study/
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# OS artefacts
+.DS_Store
+Thumbs.db
