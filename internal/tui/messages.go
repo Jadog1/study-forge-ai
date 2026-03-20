@@ -1,5 +1,10 @@
 package tui
 
+import (
+	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/internal/state"
+)
+
 // aiStreamMsg carries a streaming AI response event from the provider.
 type aiStreamMsg struct {
 	stream      <-chan aiStreamEvent
@@ -23,4 +28,11 @@ type sfqDoneMsg struct {
 type workflowDoneMsg struct {
 	summary string
 	err     error
+}
+
+// usageLoadedMsg carries loaded usage totals for the Usage tab.
+type usageLoadedMsg struct {
+	totals *state.UsageTotals
+	cfg    *config.Config
+	err    error
 }

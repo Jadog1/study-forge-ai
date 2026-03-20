@@ -1,4 +1,4 @@
-﻿// Package tui provides the interactive terminal UI for study-agent.
+// Package tui provides the interactive terminal UI for study-agent.
 // app.go wires together the model, tab components, and overlay components.
 package tui
 
@@ -125,6 +125,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.summary
 		}
 		return m, nil
+
+	case usageLoadedMsg:
+		m.usage = m.usage.receiveWithConfig(msg.totals, msg.cfg, msg.err)
+		if msg.err != nil {
+			m.status = "Usage load failed"
+		} else {
+			m.status = "Usage refreshed"
+		}
+		return m, nil
 	}
 
 	// Global key bindings.
@@ -143,12 +152,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab", "right":
 			if !m.isEditing(false) {
 				m.activeTab = (m.activeTab + 1) % tabCount
+				if m.activeTab == tabUsage && !m.usage.loaded && !m.usage.loading {
+					m.usage = m.usage.startLoading()
+					m.status = "Loading usage..."
+					return m, loadUsageCmd(m.cfg)
+				}
 				m.status = "Switched tab"
 				return m, nil
 			}
 		case "shift+tab", "left":
 			if !m.isEditing(false) {
-				m.activeTab = (m.activeTab + 3) % tabCount
+				m.activeTab = (m.activeTab + tabCount - 1) % tabCount
+				if m.activeTab == tabUsage && !m.usage.loaded && !m.usage.loading {
+					m.usage = m.usage.startLoading()
+					m.status = "Loading usage..."
+					return m, loadUsageCmd(m.cfg)
+				}
 				m.status = "Switched tab"
 				return m, nil
 			}
@@ -207,6 +226,14 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = status
 		}
 		return m, cmd
+
+	case tabUsage:
+		var cmd tea.Cmd
+		m.usage, cmd = m.usage.update(msg)
+		if cmd != nil {
+			m.status = "Refreshing usage..."
+		}
+		return m, cmd
 	}
 	return m, nil
 }
@@ -236,6 +263,11 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 	case "sfq-search":
 		m.activeTab = tabSFQ
 		m.status = "SFQ Search"
+	case "usage":
+		m.activeTab = tabUsage
+		m.usage = m.usage.startLoading()
+		m.status = "Loading usage..."
+		return m, loadUsageCmd(m.cfg)
 	case "toggle-auto-sfq":
 		m.chat = m.chat.toggleAutoSFQ()
 		if m.chat.autoSFQ {
@@ -304,7 +336,7 @@ func (m model) View() string {
 	headerWidth := clamp(docWidth-headerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
 
 	// Tab bar
-	labels := []string{"Chat", "Classes", "Settings", "SFQ Search"}
+	labels := []string{"Chat", "Classes", "Settings", "SFQ Search", "Usage"}
 	var parts []string
 	for i, l := range labels {
 		if i == m.activeTab {
@@ -333,6 +365,8 @@ func (m model) View() string {
 		body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
 	case tabSFQ:
 		body = m.sfq.view(bodyInnerWidth, bodyHeight)
+	case tabUsage:
+		body = m.usage.view(bodyInnerWidth, bodyHeight, m.cfg)
 	}
 	body = lipgloss.NewStyle().Width(bodyInnerWidth).Height(bodyHeight).MaxWidth(bodyInnerWidth).Render(body)
 	body = bodyPanelStyle.Render(body)

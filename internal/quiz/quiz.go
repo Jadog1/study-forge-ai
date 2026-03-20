@@ -52,7 +52,8 @@ func GenerateStream(class string, tags []string, provider plugins.AIProvider, cf
 	}
 
 	weakAreas := weakAreasForClass(class)
-	return runQuizAgent(class, "quiz", provider, cfg, summaries, 5, weakAreas, nil, onProgress)
+	knowledgeCtx := knowledgeContextForClass(class)
+	return runQuizAgent(class, "quiz", provider, cfg, summaries, 5, weakAreas, nil, knowledgeCtx, onProgress)
 }
 
 // Adapt generates performance-driven follow-up questions for class based on
@@ -69,7 +70,8 @@ func AdaptStream(class string, provider plugins.AIProvider, cfg *config.Config, 
 	}
 
 	past := pastQuestionsForClass(class)
-	return runQuizAgent(class, "adaptive", provider, cfg, nil, 5, weakAreas, past, onProgress)
+	knowledgeCtx := knowledgeContextForClass(class)
+	return runQuizAgent(class, "adaptive", provider, cfg, nil, 5, weakAreas, past, knowledgeCtx, onProgress)
 }
 
 // LoadQuiz reads and unmarshals a quiz YAML file from path.
@@ -92,8 +94,8 @@ func LoadQuiz(path string) (*state.Quiz, error) {
 // which prevents the YAML parse errors that occur with single-shot generation.
 // If the AI produces bad YAML, the error is fed back and the agent retries,
 // up to maxSteps total rounds.
-func runQuizAgent(class, prefix string, provider plugins.AIProvider, cfg *config.Config, summaries []string, numQuestions int, weakAreas, pastQuestions []string, onProgress func(ProgressEvent)) (*state.Quiz, string, error) {
-	transcript := buildQuizAgentPrompt(class, summaries, numQuestions, weakAreas, pastQuestions, cfg)
+func runQuizAgent(class, prefix string, provider plugins.AIProvider, cfg *config.Config, summaries []string, numQuestions int, weakAreas, pastQuestions, knowledgeCtx []string, onProgress func(ProgressEvent)) (*state.Quiz, string, error) {
+	transcript := buildQuizAgentPrompt(class, summaries, numQuestions, weakAreas, pastQuestions, knowledgeCtx, cfg)
 
 	const maxSteps = 6
 	for step := 0; step < maxSteps; step++ {
@@ -143,7 +145,7 @@ func runQuizAgent(class, prefix string, provider plugins.AIProvider, cfg *config
 	return nil, "", fmt.Errorf("quiz agent exceeded %d steps without producing valid output", maxSteps)
 }
 
-func buildQuizAgentPrompt(class string, summaries []string, numQuestions int, weakAreas, pastQuestions []string, cfg *config.Config) string {
+func buildQuizAgentPrompt(class string, summaries []string, numQuestions int, weakAreas, pastQuestions, knowledgeCtx []string, cfg *config.Config) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are generating a quiz for class: %s.\n", class)
 	fmt.Fprintf(&b, "Task: produce exactly %d questions as a YAML document.\n\n", numQuestions)
@@ -160,6 +162,13 @@ func buildQuizAgentPrompt(class string, summaries []string, numQuestions int, we
 		for i, s := range summaries {
 			fmt.Fprintf(&b, "[%d] %s\n\n", i+1, s)
 		}
+	}
+	if len(knowledgeCtx) > 0 {
+		b.WriteString("\nKnowledge base context (include section_id and component_id in questions when the source is identifiable):\n")
+		for _, line := range knowledgeCtx {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("\n")
 	}
 	if len(weakAreas) > 0 {
 		fmt.Fprintf(&b, "\nFocus extra attention on these weak areas: %s\n", strings.Join(weakAreas, ", "))
@@ -411,4 +420,39 @@ func pastQuestionsForClass(class string) []string {
 		}
 	}
 	return questions
+}
+
+// knowledgeContextForClass builds a list of context lines from the knowledge
+// graph for class, including section and component IDs for provenance tagging.
+func knowledgeContextForClass(class string) []string {
+	secIdx, err := state.LoadSectionIndex()
+	if err != nil {
+		return nil
+	}
+	cmpIdx, err := state.LoadComponentIndex()
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, s := range secIdx.Sections {
+		if s.Class != class {
+			continue
+		}
+		summary := s.Summary
+		if len(summary) > 120 {
+			summary = summary[:117] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("Section %s: %q — %s", s.ID, s.Title, summary))
+		for _, c := range cmpIdx.Components {
+			if c.SectionID != s.ID {
+				continue
+			}
+			content := c.Content
+			if len(content) > 100 {
+				content = content[:97] + "..."
+			}
+			lines = append(lines, fmt.Sprintf("  Component %s (%s): %s", c.ID, c.Kind, content))
+		}
+	}
+	return lines
 }

@@ -73,7 +73,7 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 				InputTokens:  summarizeUsage.Usage.InputTokens,
 				OutputTokens: summarizeUsage.Usage.OutputTokens,
 				TotalTokens:  summarizeUsage.Usage.TotalTokens,
-				CostUSD:      summarizeUsage.Usage.CostUSD,
+				CostUSD:      costForGenResult(summarizeUsage, cfg),
 				Class:        class,
 				SourcePath:   note.Source,
 				IngestRunID:  result.IngestRunID,
@@ -105,7 +105,7 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 				InputTokens:  usage.Usage.InputTokens,
 				OutputTokens: usage.Usage.OutputTokens,
 				TotalTokens:  usage.Usage.TotalTokens,
-				CostUSD:      usage.Usage.CostUSD,
+				CostUSD:      costForGenResult(usage, cfg),
 				Class:        class,
 				SourcePath:   note.Source,
 				IngestRunID:  result.IngestRunID,
@@ -115,7 +115,7 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 
 		for _, section := range sections.Sections {
 			normalizedSection, components := materializeKnowledgeUnits(section, note, class)
-			components = attachEmbeddings(&normalizedSection, components, embeddingProvider, emit, result.IngestRunID)
+			components = attachEmbeddings(&normalizedSection, components, embeddingProvider, emit, result.IngestRunID, cfg)
 
 			candidates := state.SearchSectionsByEmbedding(sectionIndex, normalizedSection.Embedding, 3)
 			merged := false
@@ -138,7 +138,7 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 						InputTokens:  reviewUsage.Usage.InputTokens,
 						OutputTokens: reviewUsage.Usage.OutputTokens,
 						TotalTokens:  reviewUsage.Usage.TotalTokens,
-						CostUSD:      reviewUsage.Usage.CostUSD,
+						CostUSD:      costForGenResult(reviewUsage, cfg),
 						Class:        class,
 						SourcePath:   note.Source,
 						IngestRunID:  result.IngestRunID,
@@ -269,7 +269,7 @@ func materializeKnowledgeUnits(sectionData composedSection, note state.Note, cla
 	return section, components
 }
 
-func attachEmbeddings(section *state.Section, components []state.Component, provider plugins.EmbeddingProvider, emit func(ProgressEvent), ingestRunID string) []state.Component {
+func attachEmbeddings(section *state.Section, components []state.Component, provider plugins.EmbeddingProvider, emit func(ProgressEvent), ingestRunID string, cfg *config.Config) []state.Component {
 	if section == nil || provider == nil || provider.Disabled() {
 		return components
 	}
@@ -294,7 +294,7 @@ func attachEmbeddings(section *state.Section, components []state.Component, prov
 		InputTokens:  usage.Usage.InputTokens,
 		OutputTokens: usage.Usage.OutputTokens,
 		TotalTokens:  usage.Usage.TotalTokens,
-		CostUSD:      usage.Usage.CostUSD,
+		CostUSD:      costForEmbedResult(usage, cfg),
 		Class:        section.Class,
 		SourcePath:   firstSource(section.SourcePaths),
 		IngestRunID:  ingestRunID,
@@ -330,7 +330,7 @@ func attachEmbeddings(section *state.Section, components []state.Component, prov
 		InputTokens:  componentUsage.Usage.InputTokens,
 		OutputTokens: componentUsage.Usage.OutputTokens,
 		TotalTokens:  componentUsage.Usage.TotalTokens,
-		CostUSD:      componentUsage.Usage.CostUSD,
+		CostUSD:      costForEmbedResult(componentUsage, cfg),
 		Class:        section.Class,
 		SourcePath:   firstSource(section.SourcePaths),
 		IngestRunID:  ingestRunID,
@@ -370,6 +370,24 @@ func firstSource(paths []string) string {
 		return ""
 	}
 	return paths[0]
+}
+
+// costForGenResult returns the CostUSD for a generate call, using the pricing
+// config to compute it if the provider did not supply a cost.
+func costForGenResult(usage plugins.GenerateResult, cfg *config.Config) float64 {
+	if usage.Usage.CostUSD > 0 {
+		return usage.Usage.CostUSD
+	}
+	return config.CostForTokens(usage.Metadata.Model, usage.Usage.InputTokens, usage.Usage.OutputTokens, cfg)
+}
+
+// costForEmbedResult returns the CostUSD for an embed call, using the pricing
+// config to compute it if the provider did not supply a cost.
+func costForEmbedResult(usage plugins.EmbedResult, cfg *config.Config) float64 {
+	if usage.Usage.CostUSD > 0 {
+		return usage.Usage.CostUSD
+	}
+	return config.CostForTokens(usage.Metadata.Model, usage.Usage.InputTokens, 0, cfg)
 }
 
 func generateWithMetadata(provider plugins.AIProvider, prompt string) (string, plugins.GenerateResult, error) {

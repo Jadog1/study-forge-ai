@@ -65,6 +65,8 @@ sections:
     hint: "<helpful nudge without giving away the answer>"
     answer: "<clear, complete answer>"
     reasoning: "<explanation of why this is correct>"
+    section_id: "<source section id if known, e.g. sec-abc12345 — omit if unknown>"
+    component_id: "<source component id if known, e.g. cmp-abc12345 — omit if unknown>"
     tags:
       - "<tag>"
   - type: "question"
@@ -73,12 +75,15 @@ sections:
     hint: "<hint>"
     answer: "<answer>"
     reasoning: "<reasoning>"
+    section_id: "<source section id or omit>"
+    component_id: "<source component id or omit>"
     tags:
       - "<tag>"
 
 Rules:
-- All string values must be non-empty.
+- All non-optional string values must be non-empty.
 - section id values must be unique and sequential: q-001, q-002, q-003, etc.
 - sections must contain at least one entry.
+- section_id and component_id are optional; include them only when the study material identifies the source knowledge section or component.
 - Do not add any fields beyond those listed above.
 - Respond with ONLY the YAML document, nothing else.`

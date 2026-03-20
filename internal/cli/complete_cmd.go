@@ -54,9 +54,11 @@ var completeCmd = &cobra.Command{
 				correct = line == "y" || line == "yes"
 			}
 			results.Results = append(results.Results, state.QuizResult{
-				QuestionID: s.ID,
-				Correct:    correct,
-				TimeSpent:  0,
+				QuestionID:  s.ID,
+				Correct:     correct,
+				TimeSpent:   0,
+				SectionID:   s.SectionID,
+				ComponentID: s.ComponentID,
 			})
 			fmt.Println()
 		}

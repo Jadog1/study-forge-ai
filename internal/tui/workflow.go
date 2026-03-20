@@ -44,6 +44,9 @@ type WorkflowModel struct {
 
 	// Live agent-step display populated during stepRunning for streaming workflows.
 	actionLines   []string // one entry per tool action invoked so far
+	actionOffset  int      // top line offset for scrollable running log
+	actionRows    int      // viewport line count for running log
+	followActions bool     // auto-follow new updates only while already at bottom
 	pendingResult string   // accumulated text parts arriving before done
 
 	// Outcome display.
@@ -80,6 +83,9 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.result = ""
 	w.errMsg = ""
 	w.actionLines = nil
+	w.actionOffset = 0
+	w.actionRows = 8
+	w.followActions = true
 	w.pendingResult = ""
 	w.pathInput.SetValue("")
 	w.classInput.SetValue(defaultClass)
@@ -195,6 +201,40 @@ func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config
 }
 
 func (w WorkflowModel) updateRunning(msg tea.Msg) (WorkflowModel, bool, string, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "up", "k":
+			w.actionOffset--
+			w.clampActionOffset()
+			w.followActions = w.isAtBottom()
+			return w, true, "", nil
+		case "down", "j":
+			w.actionOffset++
+			w.clampActionOffset()
+			w.followActions = w.isAtBottom()
+			return w, true, "", nil
+		case "pgup", "b":
+			w.actionOffset -= w.actionRows
+			w.clampActionOffset()
+			w.followActions = w.isAtBottom()
+			return w, true, "", nil
+		case "pgdown", "f":
+			w.actionOffset += w.actionRows
+			w.clampActionOffset()
+			w.followActions = w.isAtBottom()
+			return w, true, "", nil
+		case "home", "g":
+			w.actionOffset = 0
+			w.clampActionOffset()
+			w.followActions = false
+			return w, true, "", nil
+		case "end", "G":
+			w.scrollActionsToBottom()
+			w.followActions = true
+			return w, true, "", nil
+		}
+	}
+
 	switch msg := msg.(type) {
 	case workflowDoneMsg:
 		w.step = stepDone
@@ -223,11 +263,68 @@ func (w WorkflowModel) updateRunning(msg tea.Msg) (WorkflowModel, bool, string, 
 			w.pendingResult += msg.part
 		}
 		if msg.actionLabel != "" {
+			wasAtBottom := w.isAtBottom()
 			w.actionLines = updateActionLines(w.actionLines, msg.actionLabel, msg.actionInfo, msg.actionDone, msg.err)
+			if wasAtBottom || w.followActions {
+				w.scrollActionsToBottom()
+			}
+			w.followActions = w.isAtBottom()
 		}
 		return w, true, "", waitForAIStreamCmd(msg.stream)
 	}
 	return w, true, "", nil
+}
+
+func (w *WorkflowModel) clampActionOffset() {
+	maxOffset := w.maxActionOffset()
+	if w.actionOffset < 0 {
+		w.actionOffset = 0
+	}
+	if w.actionOffset > maxOffset {
+		w.actionOffset = maxOffset
+	}
+}
+
+func (w WorkflowModel) maxActionOffset() int {
+	rows := w.actionRows
+	if rows <= 0 {
+		rows = 1
+	}
+	maxOffset := len(w.actionLines) - rows
+	if maxOffset < 0 {
+		return 0
+	}
+	return maxOffset
+}
+
+func (w WorkflowModel) isAtBottom() bool {
+	return w.actionOffset >= w.maxActionOffset()
+}
+
+func (w *WorkflowModel) scrollActionsToBottom() {
+	w.actionOffset = w.maxActionOffset()
+}
+
+func (w WorkflowModel) visibleActionLines() []string {
+	if len(w.actionLines) == 0 {
+		return nil
+	}
+	rows := w.actionRows
+	if rows <= 0 {
+		rows = 1
+	}
+	start := w.actionOffset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(w.actionLines) {
+		start = len(w.actionLines)
+	}
+	end := start + rows
+	if end > len(w.actionLines) {
+		end = len(w.actionLines)
+	}
+	return w.actionLines[start:end]
 }
 
 // updateActionLines adds or updates an action entry in the action log.
@@ -267,9 +364,18 @@ func (w WorkflowModel) updateDone(msg tea.Msg) (WorkflowModel, bool, string, tea
 }
 
 // View renders the workflow modal overlay string.
-func (w WorkflowModel) View(width, _ int) string {
+func (w WorkflowModel) View(width, height int) string {
 	panelWidth := clamp(width-10, 42, 78)
+	panelHeight := clamp(height-6, 12, 26)
 	innerWidth := clamp(panelWidth-workflowStyle.GetHorizontalFrameSize(), 24, panelWidth)
+	innerHeight := clamp(panelHeight-workflowStyle.GetVerticalFrameSize(), 8, panelHeight)
+
+	if w.step == stepRunning {
+		// Reserve room for title, subtitle, status, and scroll hint/footer.
+		rows := clamp(innerHeight-6, 3, innerHeight-2)
+		w.actionRows = rows
+		w.clampActionOffset()
+	}
 
 	var b strings.Builder
 	b.WriteString(headerStyle.Render(w.title()) + "\n")
@@ -280,8 +386,17 @@ func (w WorkflowModel) View(width, _ int) string {
 		b.WriteString(w.viewInputStep())
 	case stepRunning:
 		b.WriteString(warnStyle.Render("Running, please wait…") + "\n")
-		for _, line := range w.actionLines {
+		visible := w.visibleActionLines()
+		for _, line := range visible {
 			b.WriteString(dimStyle.Render("  "+line) + "\n")
+		}
+		if len(w.actionLines) == 0 {
+			b.WriteString(dimStyle.Render("  Waiting for updates...") + "\n")
+		}
+		if len(w.actionLines) > 0 {
+			start := w.actionOffset + 1
+			end := w.actionOffset + len(visible)
+			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Showing %d-%d of %d  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  End follow", start, end, len(w.actionLines))))
 		}
 	case stepDone:
 		if w.errMsg != "" {
@@ -293,7 +408,8 @@ func (w WorkflowModel) View(width, _ int) string {
 		b.WriteString("\n" + dimStyle.Render("Press Enter or Esc to close"))
 	}
 
-	return workflowStyle.Width(innerWidth).Render(b.String())
+	content := lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).MaxHeight(innerHeight).Render(b.String())
+	return workflowStyle.Width(innerWidth).Height(innerHeight).Render(content)
 }
 
 func (w WorkflowModel) viewInputStep() string {

@@ -36,6 +36,10 @@ type Config struct {
 	// CustomPromptContext is appended verbatim to every AI prompt.
 	// Use it to steer output style (e.g. "prefer real-world analogies").
 	CustomPromptContext string `yaml:"custom_prompt_context,omitempty"`
+	// ModelPrices stores per-million-token pricing overrides for AI models.
+	// Keys are model name strings (e.g. "gpt-4o-mini").
+	// Built-in prices for well-known models are provided automatically.
+	ModelPrices map[string]ModelPrice `yaml:"model_prices,omitempty"`
 }
 
 // EmbeddingsConfig selects which provider/model to use for embeddings.

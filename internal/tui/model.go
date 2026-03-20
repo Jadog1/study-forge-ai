@@ -13,6 +13,7 @@ const (
 	tabClasses
 	tabSettings
 	tabSFQ
+	tabUsage
 	tabCount
 )
 
@@ -35,6 +36,7 @@ type model struct {
 	classes  ClassesTab
 	settings SettingsTab
 	sfq      SFQTab
+	usage    UsageTab
 
 	// Overlay components — rendered on top when visible.
 	palette  PaletteModel
@@ -53,6 +55,7 @@ func newModel(cfg *config.Config, orc *orchestrator.Orchestrator) model {
 		classes:   newClassesTab(classes),
 		settings:  newSettingsTab(),
 		sfq:       newSFQTab(),
+		usage:     newUsageTab(),
 		palette:   newPalette(),
 		workflow:  newWorkflow(),
 	}
@@ -69,6 +72,7 @@ func (m model) resize(width, height int) model {
 	m.classes = m.classes.resize(innerWidth)
 	m.settings = m.settings.resize(innerWidth)
 	m.sfq = m.sfq.resize(innerWidth)
+	m.usage = m.usage.resize(innerWidth)
 	m.palette = m.palette.resize(clamp(innerWidth, 36, 76))
 	m.workflow = m.workflow.resize(clamp(innerWidth, 28, 72))
 	return m

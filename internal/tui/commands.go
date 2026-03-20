@@ -191,3 +191,11 @@ func runAdaptCmd(class string, orc *orchestrator.Orchestrator, cfg *config.Confi
 	}()
 	return waitForAIStreamCmd(stream)
 }
+
+// loadUsageCmd loads usage totals using the current pricing config.
+func loadUsageCmd(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		totals, err := state.LoadUsageTotalsWithPricing(cfg, state.UsageFilter{})
+		return usageLoadedMsg{totals: totals, cfg: cfg, err: err}
+	}
+}

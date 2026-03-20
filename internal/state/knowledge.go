@@ -98,6 +98,12 @@ type Totals struct {
 	CostUSD      float64 `json:"cost_usd"`
 }
 
+// UsageFilter narrows usage aggregation to a specific time range.
+type UsageFilter struct {
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+}
+
 func sectionIndexPath() (string, error) {
 	return config.Path("knowledge", "sections", "index.json")
 }
@@ -307,6 +313,91 @@ func mergeComponent(existing, incoming Component) Component {
 	return merged
 }
 
+// LoadUsageTotals reads the pre-computed aggregate totals from disk.
+// Returns an empty UsageTotals if the file does not exist yet.
+func LoadUsageTotals() (*UsageTotals, error) {
+	path, err := usageTotalsPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &UsageTotals{ByModel: make(map[string]Totals)}, nil
+		}
+		return nil, fmt.Errorf("read usage totals: %w", err)
+	}
+	var totals UsageTotals
+	if err := json.Unmarshal(data, &totals); err != nil {
+		return nil, fmt.Errorf("parse usage totals: %w", err)
+	}
+	if totals.ByModel == nil {
+		totals.ByModel = make(map[string]Totals)
+	}
+	return &totals, nil
+}
+
+// BuildUsageTotals recomputes aggregate usage totals from the ledger using the
+// current pricing configuration. This lets historical views reflect pricing
+// changes made after events were recorded.
+func BuildUsageTotals(ledger *UsageLedger, cfg *config.Config, filter UsageFilter) *UsageTotals {
+	totals := &UsageTotals{ByModel: make(map[string]Totals)}
+	if ledger == nil {
+		return totals
+	}
+
+	for _, event := range ledger.Events {
+		if !usageEventMatchesFilter(event, filter) {
+			continue
+		}
+
+		inputTokens := event.InputTokens
+		outputTokens := event.OutputTokens
+		totalTokens := event.TotalTokens
+		if totalTokens == 0 {
+			totalTokens = inputTokens + outputTokens
+		}
+
+		modelCost := usageEventCost(event, cfg)
+		totals.TotalInputTokens += inputTokens
+		totals.TotalOutputTokens += outputTokens
+		totals.TotalTokens += totalTokens
+		totals.TotalCostUSD += modelCost
+
+		key := strings.TrimSpace(event.Provider + ":" + event.Model)
+		if key == ":" {
+			key = strings.TrimSpace(event.Model)
+		}
+		modelTotals := totals.ByModel[key]
+		modelTotals.InputTokens += inputTokens
+		modelTotals.OutputTokens += outputTokens
+		modelTotals.TotalTokens += totalTokens
+		modelTotals.CostUSD += modelCost
+		totals.ByModel[key] = modelTotals
+
+		if event.CreatedAt.After(totals.UpdatedAt) {
+			totals.UpdatedAt = event.CreatedAt
+		}
+	}
+
+	totals.TotalCostUSD = roundFloat(totals.TotalCostUSD)
+	for key, modelTotals := range totals.ByModel {
+		modelTotals.CostUSD = roundFloat(modelTotals.CostUSD)
+		totals.ByModel[key] = modelTotals
+	}
+	return totals
+}
+
+// LoadUsageTotalsWithPricing loads usage history and recomputes totals using
+// the provided pricing configuration and optional time filter.
+func LoadUsageTotalsWithPricing(cfg *config.Config, filter UsageFilter) (*UsageTotals, error) {
+	ledger, err := LoadUsageLedger()
+	if err != nil {
+		return nil, err
+	}
+	return BuildUsageTotals(ledger, cfg, filter), nil
+}
+
 func AppendUsageEvent(event UsageEvent) error {
 	ledger, err := LoadUsageLedger()
 	if err != nil {
@@ -363,25 +454,7 @@ func SaveUsageLedger(ledger *UsageLedger) error {
 }
 
 func updateUsageTotals(ledger *UsageLedger) error {
-	totals := UsageTotals{ByModel: make(map[string]Totals)}
-	for _, event := range ledger.Events {
-		totals.TotalInputTokens += event.InputTokens
-		totals.TotalOutputTokens += event.OutputTokens
-		totals.TotalTokens += event.TotalTokens
-		totals.TotalCostUSD += event.CostUSD
-		key := strings.TrimSpace(event.Provider + ":" + event.Model)
-		modelTotals := totals.ByModel[key]
-		modelTotals.InputTokens += event.InputTokens
-		modelTotals.OutputTokens += event.OutputTokens
-		modelTotals.TotalTokens += event.TotalTokens
-		modelTotals.CostUSD += event.CostUSD
-		totals.ByModel[key] = modelTotals
-	}
-	totals.TotalCostUSD = roundFloat(totals.TotalCostUSD)
-	for key, m := range totals.ByModel {
-		m.CostUSD = roundFloat(m.CostUSD)
-		totals.ByModel[key] = m
-	}
+	totals := BuildUsageTotals(ledger, nil, UsageFilter{})
 	totals.UpdatedAt = time.Now().UTC()
 
 	path, err := usageTotalsPath()
@@ -396,6 +469,23 @@ func updateUsageTotals(ledger *UsageLedger) error {
 		return fmt.Errorf("marshal usage totals: %w", err)
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+func usageEventMatchesFilter(event UsageEvent, filter UsageFilter) bool {
+	if filter.CreatedAfter != nil && event.CreatedAt.Before(*filter.CreatedAfter) {
+		return false
+	}
+	if filter.CreatedBefore != nil && event.CreatedAt.After(*filter.CreatedBefore) {
+		return false
+	}
+	return true
+}
+
+func usageEventCost(event UsageEvent, cfg *config.Config) float64 {
+	if strings.TrimSpace(event.Model) != "" {
+		return config.CostForTokens(event.Model, event.InputTokens, event.OutputTokens, cfg)
+	}
+	return roundFloat(event.CostUSD)
 }
 
 func roundFloat(value float64) float64 {
