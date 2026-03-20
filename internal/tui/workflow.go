@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -48,6 +49,8 @@ type WorkflowModel struct {
 	actionRows    int      // viewport line count for running log
 	followActions bool     // auto-follow new updates only while already at bottom
 	pendingResult string   // accumulated text parts arriving before done
+	doneOffset    int      // top line offset for wrapped done/error content
+	doneRows      int      // viewport line count for wrapped done/error content
 
 	// Outcome display.
 	result string
@@ -87,6 +90,8 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.actionRows = 8
 	w.followActions = true
 	w.pendingResult = ""
+	w.doneOffset = 0
+	w.doneRows = 8
 	w.pathInput.SetValue("")
 	w.classInput.SetValue(defaultClass)
 
@@ -238,6 +243,7 @@ func (w WorkflowModel) updateRunning(msg tea.Msg) (WorkflowModel, bool, string, 
 	switch msg := msg.(type) {
 	case workflowDoneMsg:
 		w.step = stepDone
+		w.doneOffset = 0
 		if msg.err != nil {
 			w.errMsg = msg.err.Error()
 			return w, false, w.title() + " failed", nil
@@ -247,11 +253,13 @@ func (w WorkflowModel) updateRunning(msg tea.Msg) (WorkflowModel, bool, string, 
 	case aiStreamMsg:
 		if msg.err != nil {
 			w.step = stepDone
+			w.doneOffset = 0
 			w.errMsg = msg.err.Error()
 			return w, false, w.title() + " failed", nil
 		}
 		if msg.done {
 			w.step = stepDone
+			w.doneOffset = 0
 			if w.pendingResult != "" {
 				w.result = strings.TrimSpace(w.pendingResult)
 			} else {
@@ -355,6 +363,39 @@ func updateActionLines(lines []string, label, detail string, done bool, err erro
 func (w WorkflowModel) updateDone(msg tea.Msg) (WorkflowModel, bool, string, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.String() {
+		case "up", "k":
+			w.doneOffset--
+			if w.doneOffset < 0 {
+				w.doneOffset = 0
+			}
+			return w, false, "", nil
+		case "down", "j":
+			w.doneOffset++
+			return w, false, "", nil
+		case "pgup", "b":
+			w.doneOffset -= w.doneRows
+			if w.doneOffset < 0 {
+				w.doneOffset = 0
+			}
+			return w, false, "", nil
+		case "pgdown", "f":
+			w.doneOffset += w.doneRows
+			return w, false, "", nil
+		case "home", "g":
+			w.doneOffset = 0
+			return w, false, "", nil
+		case "end", "G":
+			w.doneOffset = 1 << 30
+			return w, false, "", nil
+		case "c":
+			payload := strings.TrimSpace(w.doneContent())
+			if payload == "" {
+				return w, false, "Nothing to copy", nil
+			}
+			if err := clipboard.WriteAll(payload); err != nil {
+				return w, false, "Copy failed: " + err.Error(), nil
+			}
+			return w, false, "Copied workflow output", nil
 		case "enter", "esc", "q":
 			w.visible = false
 			return w, false, "Workflow closed", nil
@@ -375,6 +416,10 @@ func (w WorkflowModel) View(width, height int) string {
 		rows := clamp(innerHeight-6, 3, innerHeight-2)
 		w.actionRows = rows
 		w.clampActionOffset()
+	}
+	if w.step == stepDone {
+		// Reserve room for title, subtitle, section title, and footer hints.
+		w.doneRows = clamp(innerHeight-8, 3, innerHeight-3)
 	}
 
 	var b strings.Builder
@@ -399,13 +444,40 @@ func (w WorkflowModel) View(width, height int) string {
 			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Showing %d-%d of %d  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  End follow", start, end, len(w.actionLines))))
 		}
 	case stepDone:
+		title := "Result"
+		lineStyle := dimStyle
 		if w.errMsg != "" {
-			b.WriteString(renderSection("Error", errorStyle.Render(w.errMsg), innerWidth) + "\n")
-		} else {
-			resultBody := lipgloss.NewStyle().Width(innerWidth - 6).Render(w.result)
-			b.WriteString(renderSection("Result", clipLines(resultBody, 8), innerWidth) + "\n")
+			title = "Error"
+			lineStyle = errorStyle
 		}
-		b.WriteString("\n" + dimStyle.Render("Press Enter or Esc to close"))
+		wrapWidth := clamp(innerWidth-2, 12, innerWidth)
+		allLines := wrapTextLines(w.doneContent(), wrapWidth)
+		maxOffset := len(allLines) - w.doneRows
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if w.doneOffset > maxOffset {
+			w.doneOffset = maxOffset
+		}
+		if w.doneOffset < 0 {
+			w.doneOffset = 0
+		}
+
+		end := w.doneOffset + w.doneRows
+		if end > len(allLines) {
+			end = len(allLines)
+		}
+		visible := allLines[w.doneOffset:end]
+
+		b.WriteString(sectionTitleStyle.Render(title) + "\n")
+		for _, line := range visible {
+			b.WriteString(lineStyle.Render(line) + "\n")
+		}
+		if len(allLines) > 0 {
+			start := w.doneOffset + 1
+			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Showing %d-%d of %d  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  c copy", start, end, len(allLines))))
+		}
+		b.WriteString("\n" + dimStyle.Render("Enter/Esc close  •  Home/End jump"))
 	}
 
 	content := lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).MaxHeight(innerHeight).Render(b.String())
@@ -432,4 +504,90 @@ func (w WorkflowModel) viewInputStep() string {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter to %s  •  Esc to cancel", verb)))
 	}
 	return b.String()
+}
+
+func (w WorkflowModel) doneContent() string {
+	if w.errMsg != "" {
+		return w.errMsg
+	}
+	if w.result != "" {
+		return w.result
+	}
+	return "Done"
+}
+
+func wrapTextLines(text string, width int) []string {
+	if width <= 1 {
+		width = 1
+	}
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	parts := strings.Split(normalized, "\n")
+	var lines []string
+	for _, part := range parts {
+		wrapped := wrapLine(part, width)
+		if len(wrapped) == 0 {
+			lines = append(lines, "")
+			continue
+		}
+		lines = append(lines, wrapped...)
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
+func wrapLine(line string, width int) []string {
+	if line == "" {
+		return []string{""}
+	}
+	words := strings.Fields(line)
+	if len(words) == 0 {
+		return []string{""}
+	}
+
+	var out []string
+	current := words[0]
+	for _, word := range words[1:] {
+		candidate := current + " " + word
+		if lipgloss.Width(candidate) <= width {
+			current = candidate
+			continue
+		}
+		if lipgloss.Width(current) > width {
+			out = append(out, splitLongWord(current, width)...)
+		} else {
+			out = append(out, current)
+		}
+		current = word
+	}
+	if lipgloss.Width(current) > width {
+		out = append(out, splitLongWord(current, width)...)
+	} else {
+		out = append(out, current)
+	}
+	return out
+}
+
+func splitLongWord(word string, width int) []string {
+	if width <= 1 {
+		return strings.Split(word, "")
+	}
+	var lines []string
+	var b strings.Builder
+	for _, r := range word {
+		candidate := b.String() + string(r)
+		if lipgloss.Width(candidate) > width {
+			lines = append(lines, b.String())
+			b.Reset()
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() > 0 {
+		lines = append(lines, b.String())
+	}
+	if len(lines) == 0 {
+		return []string{word}
+	}
+	return lines
 }
