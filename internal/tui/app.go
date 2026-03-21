@@ -234,7 +234,7 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tabKnowledge:
 		var cmd tea.Cmd
-		m.knowledge, cmd = m.knowledge.update(msg)
+		m.knowledge, cmd = m.knowledge.update(msg, m.classes.SelectedClass())
 		if cmd != nil {
 			m.status = "Loading knowledge..."
 		}
@@ -478,4 +478,31 @@ func adaptiveTabLabels(availableWidth, activeTab int) ([]string, bool) {
 
 	labels := labelSets[len(labelSets)-1]
 	return labels, false
+}
+
+func appBodyDimensions(width, height, activeTab int) (int, int) {
+	if width <= 0 || height <= 0 {
+		return 0, 0
+	}
+
+	availableDocWidth := max(52, width-8)
+	labels, showPaletteHint := adaptiveTabLabels(availableDocWidth-headerBarStyle.GetHorizontalFrameSize(), activeTab)
+	tabParts := renderTabParts(labels, activeTab)
+	tabsRow := lipgloss.JoinHorizontal(lipgloss.Bottom, tabParts...)
+	headerContent := tabsRow
+	if showPaletteHint {
+		headerContent = lipgloss.JoinHorizontal(lipgloss.Bottom, tabsRow, dimStyle.Render("  Ctrl+P actions"))
+	}
+
+	docWidth := clamp(width-8, 52, 116)
+	headerNeededWidth := lipgloss.Width(headerContent) + headerBarStyle.GetHorizontalFrameSize()
+	if headerNeededWidth > docWidth {
+		docWidth = min(availableDocWidth, headerNeededWidth)
+	}
+
+	bodyInnerWidth := clamp(docWidth-bodyPanelStyle.GetHorizontalFrameSize(), 24, docWidth)
+	headerWidth := clamp(docWidth-headerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
+	header := headerBarStyle.Width(headerWidth).Render(headerContent)
+	bodyHeight := clamp(height-lipgloss.Height(header)-10, 4, height-14)
+	return bodyInnerWidth, bodyHeight
 }

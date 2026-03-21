@@ -57,3 +57,49 @@ func TestAggregateSectionMetricsDedupesSectionAndComponentHistory(t *testing.T) 
 		t.Fatalf("expected latest answered time %s, got %s", base, metrics.LastAnswered)
 	}
 }
+
+func TestKnowledgeTabFilteredEntriesUsesSelectedClass(t *testing.T) {
+	tab := KnowledgeTab{
+		entries: []knowledgeSectionEntry{
+			{Section: state.Section{ID: "sec-1", Class: "math", Title: "Algebra"}},
+			{Section: state.Section{ID: "sec-2", Class: "history", Title: "Rome"}},
+			{Section: state.Section{ID: "sec-3", Class: "Math", Title: "Geometry"}},
+		},
+	}
+
+	filtered := tab.filteredEntries("math")
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 filtered sections, got %d", len(filtered))
+	}
+	if filtered[0].Section.ID != "sec-1" || filtered[1].Section.ID != "sec-3" {
+		t.Fatalf("unexpected filtered order: %+v", filtered)
+	}
+}
+
+func TestKnowledgeTabPrepareClampsSelectionAndScroll(t *testing.T) {
+	tab := KnowledgeTab{
+		entries: []knowledgeSectionEntry{
+			{
+				Section: state.Section{ID: "sec-1", Class: "math", Title: "Algebra", Summary: "short"},
+				Components: []knowledgeComponentEntry{
+					{Component: state.Component{Content: "definition one"}},
+				},
+			},
+			{
+				Section: state.Section{ID: "sec-2", Class: "history", Title: "Rome", Summary: "another"},
+			},
+		},
+		selectedSection: 1,
+		componentScroll: 999,
+		width:           72,
+		height:          16,
+	}
+
+	prepared := tab.prepare("math")
+	if prepared.selectedSection != 0 {
+		t.Fatalf("expected selected section to clamp to first filtered section, got %d", prepared.selectedSection)
+	}
+	if prepared.componentScroll != 0 {
+		t.Fatalf("expected component scroll to clamp to 0, got %d", prepared.componentScroll)
+	}
+}

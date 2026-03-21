@@ -68,13 +68,17 @@ func (m model) resize(width, height int) model {
 	m.width = width
 	m.height = height
 
-	contentWidth := clamp(width-14, 34, 108)
-	innerWidth := clamp(contentWidth-bodyPanelStyle.GetHorizontalFrameSize()-4, 20, 96)
-	contentHeight := clamp(height-13, 8, height)
+	innerWidth, bodyHeight := appBodyDimensions(width, height, m.activeTab)
+	if innerWidth == 0 {
+		innerWidth = clamp(width-20, 20, 96)
+	}
+	if bodyHeight == 0 {
+		bodyHeight = clamp(height-14, 4, height)
+	}
 
 	m.chat = m.chat.resize(innerWidth)
 	m.classes = m.classes.resize(innerWidth)
-	m.knowledge = m.knowledge.resize(innerWidth, contentHeight)
+	m.knowledge = m.knowledge.resize(innerWidth, bodyHeight)
 	m.settings = m.settings.resize(innerWidth)
 	m.sfq = m.sfq.resize(innerWidth)
 	m.usage = m.usage.resize(innerWidth)
