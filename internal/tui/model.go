@@ -11,6 +11,7 @@ import (
 const (
 	tabChat = iota
 	tabClasses
+	tabKnowledge
 	tabSettings
 	tabSFQ
 	tabUsage
@@ -32,11 +33,12 @@ type model struct {
 	activeTab int
 
 	// Tab components — one per tab.
-	chat     ChatTab
-	classes  ClassesTab
-	settings SettingsTab
-	sfq      SFQTab
-	usage    UsageTab
+	chat      ChatTab
+	classes   ClassesTab
+	knowledge KnowledgeTab
+	settings  SettingsTab
+	sfq       SFQTab
+	usage     UsageTab
 
 	// Overlay components — rendered on top when visible.
 	palette  PaletteModel
@@ -53,6 +55,7 @@ func newModel(cfg *config.Config, orc *orchestrator.Orchestrator) model {
 		status:    "Ready",
 		chat:      newChatTab(),
 		classes:   newClassesTab(classes),
+		knowledge: newKnowledgeTab(),
 		settings:  newSettingsTab(),
 		sfq:       newSFQTab(),
 		usage:     newUsageTab(),
@@ -67,9 +70,11 @@ func (m model) resize(width, height int) model {
 
 	contentWidth := clamp(width-14, 34, 108)
 	innerWidth := clamp(contentWidth-bodyPanelStyle.GetHorizontalFrameSize()-4, 20, 96)
+	contentHeight := clamp(height-13, 8, height)
 
 	m.chat = m.chat.resize(innerWidth)
 	m.classes = m.classes.resize(innerWidth)
+	m.knowledge = m.knowledge.resize(innerWidth, contentHeight)
 	m.settings = m.settings.resize(innerWidth)
 	m.sfq = m.sfq.resize(innerWidth)
 	m.usage = m.usage.resize(innerWidth)

@@ -44,6 +44,13 @@ type usageLedgerLoadedMsg struct {
 	err    error
 }
 
+// knowledgeLoadedMsg carries loaded section/component knowledge for the Knowledge tab.
+type knowledgeLoadedMsg struct {
+	sections   *state.SectionIndex
+	components *state.ComponentIndex
+	err        error
+}
+
 // trackedSyncDoneMsg carries completion status for manual/automatic tracked-session sync.
 type trackedSyncDoneMsg struct {
 	report tracking.SyncReport

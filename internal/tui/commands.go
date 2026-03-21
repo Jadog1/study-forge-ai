@@ -230,6 +230,21 @@ func loadLedgerCmd(cfg *config.Config) tea.Cmd {
 	}
 }
 
+// loadKnowledgeCmd loads the learned sections and components for the Knowledge tab.
+func loadKnowledgeCmd() tea.Cmd {
+	return func() tea.Msg {
+		sections, sectionErr := state.LoadSectionIndex()
+		if sectionErr != nil {
+			return knowledgeLoadedMsg{err: sectionErr}
+		}
+		components, componentErr := state.LoadComponentIndex()
+		if componentErr != nil {
+			return knowledgeLoadedMsg{err: componentErr}
+		}
+		return knowledgeLoadedMsg{sections: sections, components: components}
+	}
+}
+
 // syncTrackedSessionsCmd imports unseen tracked sfq sessions into quiz results
 // and section/component history.
 func syncTrackedSessionsCmd() tea.Cmd {

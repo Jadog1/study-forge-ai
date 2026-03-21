@@ -136,6 +136,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case knowledgeLoadedMsg:
+		m.knowledge = m.knowledge.receive(msg.sections, msg.components, msg.err)
+		if msg.err != nil {
+			m.status = "Knowledge load failed"
+		} else {
+			m.status = "Knowledge refreshed"
+		}
+		return m, nil
+
 	case trackedSyncDoneMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -162,6 +171,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab", "right":
 			if !m.isEditing(false) {
 				m.activeTab = (m.activeTab + 1) % tabCount
+				if m.activeTab == tabKnowledge {
+					m.knowledge = m.knowledge.startLoading()
+					m.status = "Loading knowledge..."
+					return m, loadKnowledgeCmd()
+				}
 				if m.activeTab == tabUsage && !m.usage.loaded && !m.usage.loading {
 					m.usage = m.usage.startLoading()
 					m.status = "Loading usage..."
@@ -173,6 +187,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "left":
 			if !m.isEditing(false) {
 				m.activeTab = (m.activeTab + tabCount - 1) % tabCount
+				if m.activeTab == tabKnowledge {
+					m.knowledge = m.knowledge.startLoading()
+					m.status = "Loading knowledge..."
+					return m, loadKnowledgeCmd()
+				}
 				if m.activeTab == tabUsage && !m.usage.loaded && !m.usage.loading {
 					m.usage = m.usage.startLoading()
 					m.status = "Loading usage..."
@@ -210,6 +229,14 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.classes, status, cmd = m.classes.update(msg)
 		if status != "" {
 			m.status = status
+		}
+		return m, cmd
+
+	case tabKnowledge:
+		var cmd tea.Cmd
+		m.knowledge, cmd = m.knowledge.update(msg)
+		if cmd != nil {
+			m.status = "Loading knowledge..."
 		}
 		return m, cmd
 
@@ -344,25 +371,24 @@ func (m model) View() string {
 			warnBannerStyle.Render("Terminal is too small. Resize to at least 60x18."))
 	}
 
+	availableDocWidth := max(52, m.width-8)
+	labels, showPaletteHint := adaptiveTabLabels(availableDocWidth-headerBarStyle.GetHorizontalFrameSize(), m.activeTab)
+	tabParts := renderTabParts(labels, m.activeTab)
+	tabsRow := lipgloss.JoinHorizontal(lipgloss.Bottom, tabParts...)
+	headerContent := tabsRow
+	if showPaletteHint {
+		headerContent = lipgloss.JoinHorizontal(lipgloss.Bottom, tabsRow, dimStyle.Render("  Ctrl+P actions"))
+	}
+
 	docWidth := clamp(m.width-8, 52, 116)
+	headerNeededWidth := lipgloss.Width(headerContent) + headerBarStyle.GetHorizontalFrameSize()
+	if headerNeededWidth > docWidth {
+		docWidth = min(availableDocWidth, headerNeededWidth)
+	}
+
 	bodyInnerWidth := clamp(docWidth-bodyPanelStyle.GetHorizontalFrameSize(), 24, docWidth)
 	footerWidth := clamp(docWidth-footerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
 	headerWidth := clamp(docWidth-headerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
-
-	// Tab bar
-	labels := []string{"Chat", "Classes", "Settings", "SFQ Search", "Usage"}
-	var parts []string
-	for i, l := range labels {
-		if i == m.activeTab {
-			parts = append(parts, activeTabStyle.Render(l))
-		} else {
-			parts = append(parts, inactiveTabStyle.Render(l))
-		}
-	}
-	headerContent := lipgloss.JoinHorizontal(lipgloss.Bottom,
-		lipgloss.JoinHorizontal(lipgloss.Bottom, parts...),
-		dimStyle.Render("  Ctrl+P actions"),
-	)
 	header := headerBarStyle.Width(headerWidth).Render(headerContent)
 
 	// Active tab body
@@ -375,6 +401,8 @@ func (m model) View() string {
 		body = m.chat.view(bodyInnerWidth, bodyHeight, m.orc.Provider.Name(), m.orc.Provider.Disabled(), m.classes.SelectedClass(), m.busy)
 	case tabClasses:
 		body = m.classes.view(bodyInnerWidth, bodyHeight)
+	case tabKnowledge:
+		body = m.knowledge.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
 	case tabSettings:
 		body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
 	case tabSFQ:
@@ -382,7 +410,7 @@ func (m model) View() string {
 	case tabUsage:
 		body = m.usage.view(bodyInnerWidth, bodyHeight, m.cfg)
 	}
-	body = lipgloss.NewStyle().Width(bodyInnerWidth).Height(bodyHeight).MaxWidth(bodyInnerWidth).Render(body)
+	body = lipgloss.NewStyle().Width(bodyInnerWidth).Height(bodyHeight).MaxHeight(bodyHeight).MaxWidth(bodyInnerWidth).Render(body)
 	body = bodyPanelStyle.Render(body)
 
 	footerStatus := statusBarStyle.Render("Status: " + m.status)
@@ -414,4 +442,40 @@ func (m model) View() string {
 			m.workflow.View(m.width, m.height))
 	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, mainView)
+}
+
+func renderTabParts(labels []string, activeTab int) []string {
+	parts := make([]string, 0, len(labels))
+	for i, label := range labels {
+		if i == activeTab {
+			parts = append(parts, activeTabStyle.Render(label))
+			continue
+		}
+		parts = append(parts, inactiveTabStyle.Render(label))
+	}
+	return parts
+}
+
+func adaptiveTabLabels(availableWidth, activeTab int) ([]string, bool) {
+	labelSets := [][]string{
+		{"Chat", "Classes", "Knowledge", "Settings", "SFQ Search", "Usage"},
+		{"Chat", "Classes", "Knowledge", "Settings", "SFQ", "Usage"},
+		{"Chat", "Class", "Know", "Settings", "SFQ", "Usage"},
+		{"Chat", "Class", "Know", "Set", "SFQ", "Use"},
+	}
+	hint := dimStyle.Render("  Ctrl+P actions")
+
+	for _, labels := range labelSets {
+		parts := renderTabParts(labels, activeTab)
+		tabsWidth := lipgloss.Width(lipgloss.JoinHorizontal(lipgloss.Bottom, parts...))
+		if tabsWidth+lipgloss.Width(hint) <= availableWidth {
+			return labels, true
+		}
+		if tabsWidth <= availableWidth {
+			return labels, false
+		}
+	}
+
+	labels := labelSets[len(labelSets)-1]
+	return labels, false
 }
