@@ -215,18 +215,19 @@ Output rules:
 - Do NOT use markdown code fences.
 - Do NOT include any leading or trailing commentary.
 - The first character of your response must be s from sections:.
+- Always quote string values for title, summary, kind, and content using double quotes.
 
 Return ONLY valid YAML with this exact structure:
 sections:
-  - title: <section title>
-    summary: <section summary>
+	- title: "<section title>"
+		summary: "<section summary>"
     tags:
       - <tag>
     concepts:
       - <concept>
     components:
-      - kind: <formula|concept|definition|example|procedure|fact>
-        content: <single granular learning item>
+			- kind: "<formula|concept|definition|example|procedure|fact>"
+				content: "<single granular learning item>"
         tags:
           - <tag>
         concepts:

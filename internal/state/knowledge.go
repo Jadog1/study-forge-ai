@@ -15,36 +15,51 @@ import (
 
 // Section is a grouped learning unit composed from one or more sources.
 type Section struct {
-	ID             string    `json:"id" yaml:"id"`
-	Class          string    `json:"class" yaml:"class"`
-	Title          string    `json:"title" yaml:"title"`
-	Summary        string    `json:"summary" yaml:"summary"`
-	Tags           []string  `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Concepts       []string  `json:"concepts,omitempty" yaml:"concepts,omitempty"`
-	SourcePaths    []string  `json:"source_paths,omitempty" yaml:"source_paths,omitempty"`
-	SourceTags     []string  `json:"source_tags,omitempty" yaml:"source_tags,omitempty"`
-	ComponentIDs   []string  `json:"component_ids,omitempty" yaml:"component_ids,omitempty"`
-	Embedding      []float64 `json:"embedding,omitempty" yaml:"embedding,omitempty"`
-	EmbeddingModel string    `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
-	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at" yaml:"updated_at"`
+	ID              string                 `json:"id" yaml:"id"`
+	Class           string                 `json:"class" yaml:"class"`
+	Title           string                 `json:"title" yaml:"title"`
+	Summary         string                 `json:"summary" yaml:"summary"`
+	Tags            []string               `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Concepts        []string               `json:"concepts,omitempty" yaml:"concepts,omitempty"`
+	SourcePaths     []string               `json:"source_paths,omitempty" yaml:"source_paths,omitempty"`
+	SourceTags      []string               `json:"source_tags,omitempty" yaml:"source_tags,omitempty"`
+	ComponentIDs    []string               `json:"component_ids,omitempty" yaml:"component_ids,omitempty"`
+	Embedding       []float64              `json:"embedding,omitempty" yaml:"embedding,omitempty"`
+	EmbeddingModel  string                 `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
+	QuestionHistory []QuestionHistoryEntry `json:"question_history,omitempty" yaml:"question_history,omitempty"`
+	CreatedAt       time.Time              `json:"created_at" yaml:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at" yaml:"updated_at"`
 }
 
 // Component is a granular learning unit, linked to a section.
 type Component struct {
-	ID             string    `json:"id" yaml:"id"`
-	SectionID      string    `json:"section_id" yaml:"section_id"`
-	Class          string    `json:"class" yaml:"class"`
-	Kind           string    `json:"kind" yaml:"kind"`
-	Content        string    `json:"content" yaml:"content"`
-	Tags           []string  `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Concepts       []string  `json:"concepts,omitempty" yaml:"concepts,omitempty"`
-	SourcePaths    []string  `json:"source_paths,omitempty" yaml:"source_paths,omitempty"`
-	SourceTags     []string  `json:"source_tags,omitempty" yaml:"source_tags,omitempty"`
-	Embedding      []float64 `json:"embedding,omitempty" yaml:"embedding,omitempty"`
-	EmbeddingModel string    `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
-	CreatedAt      time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at" yaml:"updated_at"`
+	ID              string                 `json:"id" yaml:"id"`
+	SectionID       string                 `json:"section_id" yaml:"section_id"`
+	Class           string                 `json:"class" yaml:"class"`
+	Kind            string                 `json:"kind" yaml:"kind"`
+	Content         string                 `json:"content" yaml:"content"`
+	Tags            []string               `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Concepts        []string               `json:"concepts,omitempty" yaml:"concepts,omitempty"`
+	SourcePaths     []string               `json:"source_paths,omitempty" yaml:"source_paths,omitempty"`
+	SourceTags      []string               `json:"source_tags,omitempty" yaml:"source_tags,omitempty"`
+	Embedding       []float64              `json:"embedding,omitempty" yaml:"embedding,omitempty"`
+	EmbeddingModel  string                 `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
+	QuestionHistory []QuestionHistoryEntry `json:"question_history,omitempty" yaml:"question_history,omitempty"`
+	CreatedAt       time.Time              `json:"created_at" yaml:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at" yaml:"updated_at"`
+}
+
+// QuestionHistoryEntry captures a single quiz attempt linked to knowledge.
+// Entries are append-only and ordered by insertion time.
+type QuestionHistoryEntry struct {
+	ID         string    `json:"id" yaml:"id"`
+	QuizID     string    `json:"quiz_id,omitempty" yaml:"quiz_id,omitempty"`
+	QuestionID string    `json:"question_id,omitempty" yaml:"question_id,omitempty"`
+	Question   string    `json:"question,omitempty" yaml:"question,omitempty"`
+	UserAnswer string    `json:"user_answer,omitempty" yaml:"user_answer,omitempty"`
+	Expected   string    `json:"expected,omitempty" yaml:"expected,omitempty"`
+	Correct    bool      `json:"correct" yaml:"correct"`
+	AnsweredAt time.Time `json:"answered_at" yaml:"answered_at"`
 }
 
 // SectionIndex stores all known sections.
@@ -236,6 +251,7 @@ func normalizeSection(section Section) Section {
 	section.SourcePaths = dedupe(section.SourcePaths)
 	section.SourceTags = dedupe(section.SourceTags)
 	section.ComponentIDs = dedupe(section.ComponentIDs)
+	section.QuestionHistory = normalizeQuestionHistory(section.QuestionHistory)
 	if section.CreatedAt.IsZero() {
 		section.CreatedAt = time.Now().UTC()
 	}
@@ -250,6 +266,7 @@ func normalizeComponent(component Component) Component {
 	component.Concepts = dedupe(component.Concepts)
 	component.SourcePaths = dedupe(component.SourcePaths)
 	component.SourceTags = dedupe(component.SourceTags)
+	component.QuestionHistory = normalizeQuestionHistory(component.QuestionHistory)
 	if component.CreatedAt.IsZero() {
 		component.CreatedAt = time.Now().UTC()
 	}
@@ -277,6 +294,7 @@ func mergeSection(existing, incoming Section) Section {
 		merged.Embedding = incoming.Embedding
 		merged.EmbeddingModel = incoming.EmbeddingModel
 	}
+	merged.QuestionHistory = normalizeQuestionHistory(append(existing.QuestionHistory, incoming.QuestionHistory...))
 	if merged.CreatedAt.IsZero() {
 		merged.CreatedAt = time.Now().UTC()
 	}
@@ -306,6 +324,7 @@ func mergeComponent(existing, incoming Component) Component {
 		merged.Embedding = incoming.Embedding
 		merged.EmbeddingModel = incoming.EmbeddingModel
 	}
+	merged.QuestionHistory = normalizeQuestionHistory(append(existing.QuestionHistory, incoming.QuestionHistory...))
 	if merged.CreatedAt.IsZero() {
 		merged.CreatedAt = time.Now().UTC()
 	}
@@ -492,6 +511,111 @@ func roundFloat(value float64) float64 {
 	return math.Round(value*1_000_000) / 1_000_000
 }
 
+func normalizeQuestionHistory(history []QuestionHistoryEntry) []QuestionHistoryEntry {
+	if len(history) == 0 {
+		return nil
+	}
+	out := make([]QuestionHistoryEntry, 0, len(history))
+	for _, entry := range history {
+		if entry.AnsweredAt.IsZero() {
+			entry.AnsweredAt = time.Now().UTC()
+		}
+		if strings.TrimSpace(entry.ID) == "" {
+			entry.ID = fmt.Sprintf("qh-%d", time.Now().UnixNano())
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// AppendQuizQuestionHistory appends question attempt entries to matching
+// section/component records, preserving historical entries in insertion order.
+func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) error {
+	if len(results.Results) == 0 || len(quiz.Sections) == 0 {
+		return nil
+	}
+
+	sectionIndex, err := LoadSectionIndex()
+	if err != nil {
+		return fmt.Errorf("load section index: %w", err)
+	}
+	componentIndex, err := LoadComponentIndex()
+	if err != nil {
+		return fmt.Errorf("load component index: %w", err)
+	}
+
+	quizByID := make(map[string]QuizSection, len(quiz.Sections))
+	for _, section := range quiz.Sections {
+		quizByID[section.ID] = section
+	}
+
+	for _, result := range results.Results {
+		quizSection, ok := quizByID[result.QuestionID]
+		if !ok {
+			continue
+		}
+		sectionID := strings.TrimSpace(quizSection.SectionID)
+		if sectionID == "" {
+			sectionID = strings.TrimSpace(result.SectionID)
+		}
+		componentID := strings.TrimSpace(quizSection.ComponentID)
+		if componentID == "" {
+			componentID = strings.TrimSpace(result.ComponentID)
+		}
+
+		answeredAt := result.AnsweredAt
+		if answeredAt.IsZero() {
+			answeredAt = results.CompletedAt
+		}
+		if answeredAt.IsZero() {
+			answeredAt = time.Now().UTC()
+		}
+
+		event := QuestionHistoryEntry{
+			ID:         fmt.Sprintf("qh-%d", time.Now().UnixNano()),
+			QuizID:     results.QuizID,
+			QuestionID: result.QuestionID,
+			Question:   strings.TrimSpace(quizSection.Question),
+			UserAnswer: strings.TrimSpace(result.UserAnswer),
+			Expected:   strings.TrimSpace(quizSection.Answer),
+			Correct:    result.Correct,
+			AnsweredAt: answeredAt.UTC(),
+		}
+
+		for i := range sectionIndex.Sections {
+			if !strings.EqualFold(sectionIndex.Sections[i].Class, class) {
+				continue
+			}
+			if sectionIndex.Sections[i].ID != sectionID {
+				continue
+			}
+			sectionIndex.Sections[i].QuestionHistory = append(sectionIndex.Sections[i].QuestionHistory, event)
+			sectionIndex.Sections[i].UpdatedAt = time.Now().UTC()
+			break
+		}
+
+		for i := range componentIndex.Components {
+			if !strings.EqualFold(componentIndex.Components[i].Class, class) {
+				continue
+			}
+			if componentIndex.Components[i].ID != componentID {
+				continue
+			}
+			componentIndex.Components[i].QuestionHistory = append(componentIndex.Components[i].QuestionHistory, event)
+			componentIndex.Components[i].UpdatedAt = time.Now().UTC()
+			break
+		}
+	}
+
+	if err := SaveSectionIndex(sectionIndex); err != nil {
+		return fmt.Errorf("save section index: %w", err)
+	}
+	if err := SaveComponentIndex(componentIndex); err != nil {
+		return fmt.Errorf("save component index: %w", err)
+	}
+	return nil
+}
+
 // SearchSectionsByEmbedding finds nearest sections by cosine similarity.
 func SearchSectionsByEmbedding(index *SectionIndex, embedding []float64, topK int) []Section {
 	if index == nil || len(embedding) == 0 || topK <= 0 {
@@ -563,4 +687,24 @@ func CosineSimilarity(a, b []float64) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// ClearIngestedData removes all notes, sections, and components from previous
+// ingestions, resetting the knowledge base to a clean state.
+func ClearIngestedData() error {
+	// Clear notes
+	notesPath, err := config.Path("notes", "processed")
+	if err == nil {
+		_ = os.RemoveAll(notesPath)
+	}
+
+	// Clear section and component indices
+	if err := SaveSectionIndex(&SectionIndex{SchemaVersion: 1}); err != nil {
+		return fmt.Errorf("clear section index: %w", err)
+	}
+	if err := SaveComponentIndex(&ComponentIndex{SchemaVersion: 1}); err != nil {
+		return fmt.Errorf("clear component index: %w", err)
+	}
+
+	return nil
 }

@@ -103,3 +103,60 @@ func TestQuizToSFQ_NoTitle(t *testing.T) {
 		t.Errorf("expected question, got:\n%s", out)
 	}
 }
+
+func TestNormalizeQuizProvenance_FillsFromPrefixedTags(t *testing.T) {
+	q := &state.Quiz{
+		Sections: []state.QuizSection{
+			{
+				ID:       "q-001",
+				Question: "What is a derivative?",
+				Tags: []string{
+					"calculus",
+					"src_section:sec-123",
+					"src_component:cmp-456",
+				},
+			},
+		},
+	}
+
+	normalizeQuizProvenance(q)
+
+	if got := q.Sections[0].SectionID; got != "sec-123" {
+		t.Fatalf("expected section id from tag, got %q", got)
+	}
+	if got := q.Sections[0].ComponentID; got != "cmp-456" {
+		t.Fatalf("expected component id from tag, got %q", got)
+	}
+}
+
+func TestNormalizeQuizProvenance_AddsMissingPrefixedTags(t *testing.T) {
+	q := &state.Quiz{
+		Sections: []state.QuizSection{
+			{
+				ID:          "q-001",
+				Question:    "What is Bayes theorem?",
+				SectionID:   "sec-bayes",
+				ComponentID: "cmp-bayes",
+				Tags:        []string{"probability"},
+			},
+		},
+	}
+
+	normalizeQuizProvenance(q)
+
+	if !hasTag(q.Sections[0].Tags, "src_section:sec-bayes") {
+		t.Fatalf("expected src_section tag, got %#v", q.Sections[0].Tags)
+	}
+	if !hasTag(q.Sections[0].Tags, "src_component:cmp-bayes") {
+		t.Fatalf("expected src_component tag, got %#v", q.Sections[0].Tags)
+	}
+}
+
+func hasTag(tags []string, want string) bool {
+	for _, tag := range tags {
+		if strings.EqualFold(strings.TrimSpace(tag), want) {
+			return true
+		}
+	}
+	return false
+}

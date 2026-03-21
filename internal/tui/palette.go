@@ -31,6 +31,7 @@ var paletteActions = []PaletteAction{
 	{"New Class", "Create a new study class", "new-class"},
 	{"Add Context File", "Attach a context file to the active class", "add-context"},
 	{"Search Notes (SFQ)", "Open SFQ Search tab", "sfq-search"},
+	{"Sync Tracked Quiz Sessions", "Import sfq tracked results into knowledge history", "sync-tracked"},
 	{"Usage History", "Review historical AI usage and cost", "usage"},
 	{"Toggle Auto-SFQ", "Auto-lookup related notes after AI response", "toggle-auto-sfq"},
 	{"Settings", "Configure providers and preferences", "settings"},

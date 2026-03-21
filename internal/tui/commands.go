@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +13,7 @@ import (
 	"github.com/studyforge/study-agent/internal/quiz"
 	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
+	"github.com/studyforge/study-agent/internal/tracking"
 )
 
 type aiStreamEvent struct {
@@ -142,16 +144,26 @@ func runGenerateCmd(class string, tags []string, orc *orchestrator.Orchestrator,
 			stream <- aiStreamEvent{err: err, done: true}
 			return
 		}
+		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
-		sfqErr := sfq.Generate(sfqPath)
+		_, cacheErr := state.RegisterTrackedQuiz(class, path, sfqPath)
+		report, syncErr := tracking.SyncTrackedQuizSessions()
+		sfqErr := sfq.Track(sfqPath)
 		var sfqNote string
-		if sfqErr != nil {
-			sfqNote = fmt.Sprintf("\n  (could not launch quiz: %s)", sfqErr)
+		if cacheErr != nil {
+			sfqNote = fmt.Sprintf("\n  (could not register tracked quiz cache: %s)", cacheErr)
+		} else if sfqErr != nil {
+			sfqNote = fmt.Sprintf("\n  (could not start tracked quiz server: %s)", sfqErr)
 		} else {
-			sfqNote = "\n  Opening quiz in browser..."
+			sfqNote = "\n  Started tracked quiz session in browser..."
+		}
+		if syncErr != nil {
+			sfqNote += fmt.Sprintf("\n  Session sync warning: %s", syncErr)
+		} else {
+			sfqNote += fmt.Sprintf("\n  Imported sessions: %d  Pending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
 		}
 		stream <- aiStreamEvent{
-			part: fmt.Sprintf("Quiz saved: %s\n  Title: %s\n  Questions: %d%s", path, q.Title, len(q.Sections), sfqNote),
+			part: fmt.Sprintf("Quiz saved: %s\n  Quiz ID: %s\n  Title: %s\n  Questions: %d%s", path, quizID, q.Title, len(q.Sections), sfqNote),
 			done: true,
 		}
 	}()
@@ -176,16 +188,26 @@ func runAdaptCmd(class string, orc *orchestrator.Orchestrator, cfg *config.Confi
 			stream <- aiStreamEvent{err: err, done: true}
 			return
 		}
+		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
-		sfqErr := sfq.Generate(sfqPath)
+		_, cacheErr := state.RegisterTrackedQuiz(class, path, sfqPath)
+		report, syncErr := tracking.SyncTrackedQuizSessions()
+		sfqErr := sfq.Track(sfqPath)
 		var sfqNote string
-		if sfqErr != nil {
-			sfqNote = fmt.Sprintf("\n  (could not launch quiz: %s)", sfqErr)
+		if cacheErr != nil {
+			sfqNote = fmt.Sprintf("\n  (could not register tracked quiz cache: %s)", cacheErr)
+		} else if sfqErr != nil {
+			sfqNote = fmt.Sprintf("\n  (could not start tracked quiz server: %s)", sfqErr)
 		} else {
-			sfqNote = "\n  Opening quiz in browser..."
+			sfqNote = "\n  Started tracked quiz session in browser..."
+		}
+		if syncErr != nil {
+			sfqNote += fmt.Sprintf("\n  Session sync warning: %s", syncErr)
+		} else {
+			sfqNote += fmt.Sprintf("\n  Imported sessions: %d  Pending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
 		}
 		stream <- aiStreamEvent{
-			part: fmt.Sprintf("Adaptive quiz saved: %s\n  Title: %s\n  Questions: %d%s", path, q.Title, len(q.Sections), sfqNote),
+			part: fmt.Sprintf("Adaptive quiz saved: %s\n  Quiz ID: %s\n  Title: %s\n  Questions: %d%s", path, quizID, q.Title, len(q.Sections), sfqNote),
 			done: true,
 		}
 	}()
@@ -197,5 +219,22 @@ func loadUsageCmd(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		totals, err := state.LoadUsageTotalsWithPricing(cfg, state.UsageFilter{})
 		return usageLoadedMsg{totals: totals, cfg: cfg, err: err}
+	}
+}
+
+// loadLedgerCmd loads the usage ledger for display in the ledger view.
+func loadLedgerCmd(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		ledger, err := state.LoadUsageLedger()
+		return usageLedgerLoadedMsg{ledger: ledger, err: err}
+	}
+}
+
+// syncTrackedSessionsCmd imports unseen tracked sfq sessions into quiz results
+// and section/component history.
+func syncTrackedSessionsCmd() tea.Cmd {
+	return func() tea.Msg {
+		report, err := tracking.SyncTrackedQuizSessions()
+		return trackedSyncDoneMsg{report: report, err: err}
 	}
 }

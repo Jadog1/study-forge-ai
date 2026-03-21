@@ -56,11 +56,13 @@ type Quiz struct {
 
 // QuizResult records whether the user answered a single question correctly.
 type QuizResult struct {
-	QuestionID  string `json:"question_id"`
-	Correct     bool   `json:"correct"`
-	TimeSpent   int    `json:"time_spent"` // seconds
-	SectionID   string `json:"section_id,omitempty"`
-	ComponentID string `json:"component_id,omitempty"`
+	QuestionID  string    `json:"question_id"`
+	Correct     bool      `json:"correct"`
+	TimeSpent   int       `json:"time_spent"` // seconds
+	UserAnswer  string    `json:"user_answer,omitempty"`
+	AnsweredAt  time.Time `json:"answered_at,omitempty"`
+	SectionID   string    `json:"section_id,omitempty"`
+	ComponentID string    `json:"component_id,omitempty"`
 }
 
 // QuizResults is the full result set for one completed quiz session.
@@ -68,6 +70,24 @@ type QuizResults struct {
 	QuizID      string       `json:"quiz_id"`
 	CompletedAt time.Time    `json:"completed_at"`
 	Results     []QuizResult `json:"results"`
+}
+
+// TrackedQuizRecord stores generated quiz metadata for sfq tracked-session sync.
+type TrackedQuizRecord struct {
+	QuizID         string    `json:"quiz_id"`
+	Class          string    `json:"class"`
+	QuizPath       string    `json:"quiz_path"`
+	SFQPath        string    `json:"sfq_path"`
+	RegisteredAt   time.Time `json:"registered_at"`
+	LastSessionID  string    `json:"last_session_id,omitempty"`
+	LastImportedAt time.Time `json:"last_imported_at,omitempty"`
+}
+
+// TrackedQuizCache tracks generated quizzes and imported sfq session IDs.
+type TrackedQuizCache struct {
+	SchemaVersion      int                 `json:"schema_version"`
+	Quizzes            []TrackedQuizRecord `json:"quizzes"`
+	ImportedSessionIDs []string            `json:"imported_session_ids,omitempty"`
 }
 
 // ── Notes index ──────────────────────────────────────────────────────────────
@@ -227,6 +247,10 @@ func quizResultsPath(class, quizID string) (string, error) {
 	return config.Path("quizzes", class, quizID+"-results.json")
 }
 
+func trackedQuizCachePath() (string, error) {
+	return config.Path("quizzes", "tracked_cache.json")
+}
+
 // SaveQuizResults persists quiz results under ~/.study-forge-ai/quizzes/<class>/.
 func SaveQuizResults(results *QuizResults, class, quizID string) error {
 	path, err := quizResultsPath(class, quizID)
@@ -258,4 +282,128 @@ func LoadQuizResults(class, quizID string) (*QuizResults, error) {
 		return nil, fmt.Errorf("parse quiz results: %w", err)
 	}
 	return &results, nil
+}
+
+// LoadTrackedQuizCache reads tracked quiz cache data from disk.
+func LoadTrackedQuizCache() (*TrackedQuizCache, error) {
+	path, err := trackedQuizCachePath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &TrackedQuizCache{SchemaVersion: 1}, nil
+		}
+		return nil, fmt.Errorf("read tracked quiz cache: %w", err)
+	}
+	var cache TrackedQuizCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, fmt.Errorf("parse tracked quiz cache: %w", err)
+	}
+	if cache.SchemaVersion == 0 {
+		cache.SchemaVersion = 1
+	}
+	cache.ImportedSessionIDs = dedupe(cache.ImportedSessionIDs)
+	return &cache, nil
+}
+
+// SaveTrackedQuizCache writes tracked quiz cache data to disk.
+func SaveTrackedQuizCache(cache *TrackedQuizCache) error {
+	if cache == nil {
+		return fmt.Errorf("tracked quiz cache is nil")
+	}
+	if cache.SchemaVersion == 0 {
+		cache.SchemaVersion = 1
+	}
+	cache.ImportedSessionIDs = dedupe(cache.ImportedSessionIDs)
+
+	path, err := trackedQuizCachePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create tracked quiz cache dir: %w", err)
+	}
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal tracked quiz cache: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// RegisterTrackedQuiz records a generated quiz as eligible for sfq session sync.
+func RegisterTrackedQuiz(class, quizPath, sfqPath string) (*TrackedQuizRecord, error) {
+	cache, err := LoadTrackedQuizCache()
+	if err != nil {
+		return nil, err
+	}
+	quizID := strings.TrimSuffix(filepath.Base(quizPath), ".yaml")
+	record := TrackedQuizRecord{
+		QuizID:       quizID,
+		Class:        strings.TrimSpace(class),
+		QuizPath:     strings.TrimSpace(quizPath),
+		SFQPath:      strings.TrimSpace(sfqPath),
+		RegisteredAt: time.Now().UTC(),
+	}
+
+	for i := range cache.Quizzes {
+		if cache.Quizzes[i].QuizPath == record.QuizPath {
+			existing := cache.Quizzes[i]
+			record.LastSessionID = existing.LastSessionID
+			record.LastImportedAt = existing.LastImportedAt
+			if existing.RegisteredAt.IsZero() {
+				record.RegisteredAt = time.Now().UTC()
+			} else {
+				record.RegisteredAt = existing.RegisteredAt
+			}
+			cache.Quizzes[i] = record
+			if err := SaveTrackedQuizCache(cache); err != nil {
+				return nil, err
+			}
+			return &record, nil
+		}
+	}
+
+	cache.Quizzes = append(cache.Quizzes, record)
+	if err := SaveTrackedQuizCache(cache); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// IsSessionImported returns true when a session ID has already been synced.
+func (cache *TrackedQuizCache) IsSessionImported(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || cache == nil {
+		return false
+	}
+	for _, importedID := range cache.ImportedSessionIDs {
+		if importedID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkSessionImported marks sessionID as synced and updates quiz import metadata.
+func (cache *TrackedQuizCache) MarkSessionImported(sessionID, quizPath string, importedAt time.Time) {
+	if cache == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	quizPath = strings.TrimSpace(quizPath)
+	if sessionID != "" && !cache.IsSessionImported(sessionID) {
+		cache.ImportedSessionIDs = append(cache.ImportedSessionIDs, sessionID)
+	}
+	if importedAt.IsZero() {
+		importedAt = time.Now().UTC()
+	}
+	for i := range cache.Quizzes {
+		if cache.Quizzes[i].QuizPath != quizPath {
+			continue
+		}
+		cache.Quizzes[i].LastSessionID = sessionID
+		cache.Quizzes[i].LastImportedAt = importedAt.UTC()
+	}
 }

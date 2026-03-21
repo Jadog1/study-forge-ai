@@ -3,6 +3,7 @@ package tui
 import (
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/state"
+	"github.com/studyforge/study-agent/internal/tracking"
 )
 
 // aiStreamMsg carries a streaming AI response event from the provider.
@@ -34,5 +35,17 @@ type workflowDoneMsg struct {
 type usageLoadedMsg struct {
 	totals *state.UsageTotals
 	cfg    *config.Config
+	err    error
+}
+
+// usageLedgerLoadedMsg carries loaded usage ledger for the Usage tab ledger view.
+type usageLedgerLoadedMsg struct {
+	ledger *state.UsageLedger
+	err    error
+}
+
+// trackedSyncDoneMsg carries completion status for manual/automatic tracked-session sync.
+type trackedSyncDoneMsg struct {
+	report tracking.SyncReport
 	err    error
 }

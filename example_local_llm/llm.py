@@ -99,7 +99,7 @@ def build_inputs_and_kwargs(req: ChatRequest):
     return prompt, inputs, generate_kwargs
 
 
-def completion_response(content: str):
+def completion_response(content: str, prompt_tokens: int, completion_tokens: int):
     return {
         "id": "chatcmpl-local",
         "object": "chat.completion",
@@ -113,6 +113,11 @@ def completion_response(content: str):
                 "finish_reason": "stop",
             }
         ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
     }
 
 
@@ -160,9 +165,11 @@ def compute_embeddings(texts: list[str]):
 
 
 def stream_completion(req: ChatRequest):
-    _, _, generate_kwargs = build_inputs_and_kwargs(req)
+    _, inputs, generate_kwargs = build_inputs_and_kwargs(req)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     generation_error = []
+    generated_parts = []
+    prompt_tokens = int(inputs["input_ids"].shape[1])
 
     def run_generation():
         try:
@@ -180,6 +187,7 @@ def stream_completion(req: ChatRequest):
             for text in streamer:
                 if not text:
                     continue
+                generated_parts.append(text)
                 chunk = {
                     "id": "chatcmpl-local",
                     "object": "chat.completion.chunk",
@@ -202,6 +210,7 @@ def stream_completion(req: ChatRequest):
                 yield "data: [DONE]\n\n"
                 return
 
+            completion_tokens = len(tokenizer("".join(generated_parts), add_special_tokens=False)["input_ids"])
             final_chunk = {
                 "id": "chatcmpl-local",
                 "object": "chat.completion.chunk",
@@ -212,6 +221,11 @@ def stream_completion(req: ChatRequest):
                         "finish_reason": "stop",
                     }
                 ],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
             }
             yield f"data: {json.dumps(final_chunk)}\n\n"
             yield "data: [DONE]\n\n"
@@ -237,10 +251,12 @@ def chat(req: ChatRequest):
     with torch.no_grad():
         outputs = model.generate(**generate_kwargs)
 
+    prompt_tokens = int(inputs["input_ids"].shape[1])
     generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    completion_tokens = int(generated_tokens.shape[0])
     response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-    return completion_response(response_text)
+    return completion_response(response_text, prompt_tokens, completion_tokens)
 
 
 @app.post("/v1/embeddings")

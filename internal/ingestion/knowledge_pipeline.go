@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,16 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 	}
 
 	result := KnowledgeIngestResult{IngestRunID: fmt.Sprintf("ingest-%d", time.Now().UnixNano())}
+
+	// Warn if embeddings are disabled
+	if embeddingProvider == nil || embeddingProvider.Disabled() {
+		emit(ProgressEvent{
+			Label:  "Configure embeddings",
+			Detail: "Embeddings disabled - deduplication will not happen",
+			Done:   true,
+			Err:    nil,
+		})
+	}
 
 	emit(ProgressEvent{Label: "Discover files", Detail: folderPath})
 	files, err := collectFiles(folderPath)
@@ -216,14 +227,31 @@ func composeKnowledge(note state.Note, provider plugins.AIProvider, cfg *config.
 		return composedKnowledge{}, plugins.GenerateResult{}, err
 	}
 	response = sanitizeComposeYAML(response)
-	var parsed composedKnowledge
-	if err := yaml.Unmarshal([]byte(response), &parsed); err != nil {
+	parsed, err := parseComposedKnowledge(response)
+	if err != nil {
 		return composedKnowledge{}, usage, fmt.Errorf("parse compose YAML: %w\nResponse was:\n%s", err, response)
 	}
 	if len(parsed.Sections) == 0 {
 		return composedKnowledge{}, usage, fmt.Errorf("compose returned no sections")
 	}
 	return parsed, usage, nil
+}
+
+func parseComposedKnowledge(response string) (composedKnowledge, error) {
+	var parsed composedKnowledge
+	firstErr := yaml.Unmarshal([]byte(response), &parsed)
+	if firstErr == nil {
+		return parsed, nil
+	}
+
+	normalized := normalizeComposeYAMLPlainScalars(response)
+	if normalized == response {
+		return composedKnowledge{}, firstErr
+	}
+	if err := yaml.Unmarshal([]byte(normalized), &parsed); err != nil {
+		return composedKnowledge{}, err
+	}
+	return parsed, nil
 }
 
 func sanitizeComposeYAML(response string) string {
@@ -330,6 +358,57 @@ func indexOfTopLevelSections(text string) int {
 	return idx + 1
 }
 
+func normalizeComposeYAMLPlainScalars(text string) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	changed := false
+	stringFields := map[string]struct{}{
+		"title":   {},
+		"summary": {},
+		"kind":    {},
+		"content": {},
+	}
+
+	for i, line := range lines {
+		prefixLen := len(line) - len(strings.TrimLeft(line, " \t"))
+		indent := line[:prefixLen]
+		rest := strings.TrimSpace(line)
+
+		listPrefix := ""
+		if strings.HasPrefix(rest, "- ") {
+			listPrefix = "- "
+			rest = strings.TrimSpace(rest[2:])
+		}
+
+		colon := strings.Index(rest, ":")
+		if colon <= 0 {
+			continue
+		}
+
+		key := strings.TrimSpace(rest[:colon])
+		if _, ok := stringFields[key]; !ok {
+			continue
+		}
+
+		value := strings.TrimSpace(rest[colon+1:])
+		if value == "" {
+			continue
+		}
+		if strings.HasPrefix(value, "\"") || strings.HasPrefix(value, "'") || strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+			continue
+		}
+
+		quoted := strconv.Quote(value)
+		lines[i] = indent + listPrefix + key + ": " + quoted
+		changed = true
+	}
+
+	if !changed {
+		return text
+	}
+	return strings.Join(lines, "\n")
+}
+
 func materializeKnowledgeUnits(sectionData composedSection, note state.Note, class string) (state.Section, []state.Component) {
 	title := strings.TrimSpace(sectionData.Title)
 	if title == "" {
@@ -376,6 +455,12 @@ func materializeKnowledgeUnits(sectionData composedSection, note state.Note, cla
 
 func attachEmbeddings(section *state.Section, components []state.Component, provider plugins.EmbeddingProvider, emit func(ProgressEvent), ingestRunID string, cfg *config.Config) []state.Component {
 	if section == nil || provider == nil || provider.Disabled() {
+		emit(ProgressEvent{
+			Label:  "Embed section",
+			Detail: fmt.Sprintf("%s (skipped - embeddings disabled)", section.Title),
+			Done:   true,
+			Err:    nil,
+		})
 		return components
 	}
 

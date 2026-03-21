@@ -46,9 +46,15 @@ var completeCmd = &cobra.Command{
 			fmt.Printf("Q: %s\n", s.Question)
 			fmt.Printf("   Answer: %s\n", s.Answer)
 			fmt.Printf("   Reasoning: %s\n", s.Reasoning)
+			fmt.Print("   Your answer (optional, press Enter to skip): ")
+			userAnswer := ""
+			if scanner.Scan() {
+				userAnswer = strings.TrimSpace(scanner.Text())
+			}
 			fmt.Print("   Did you get it correct? (y/n): ")
 
 			correct := false
+			answeredAt := time.Now().UTC()
 			if scanner.Scan() {
 				line := strings.TrimSpace(strings.ToLower(scanner.Text()))
 				correct = line == "y" || line == "yes"
@@ -57,6 +63,8 @@ var completeCmd = &cobra.Command{
 				QuestionID:  s.ID,
 				Correct:     correct,
 				TimeSpent:   0,
+				UserAnswer:  userAnswer,
+				AnsweredAt:  answeredAt,
 				SectionID:   s.SectionID,
 				ComponentID: s.ComponentID,
 			})
@@ -67,6 +75,10 @@ var completeCmd = &cobra.Command{
 		quizID := strings.TrimSuffix(filepath.Base(quizPath), ".yaml")
 		if err := state.SaveQuizResults(&results, class, quizID); err != nil {
 			return fmt.Errorf("save results: %w", err)
+		}
+		results.QuizID = quizID
+		if err := state.AppendQuizQuestionHistory(class, *q, results); err != nil {
+			return fmt.Errorf("append question history: %w", err)
 		}
 
 		correct := 0

@@ -25,7 +25,7 @@ const (
 // Provider sends prompts to the Anthropic Messages endpoint.
 type Provider struct {
 	APIKey string
-	Model  string
+	model  string
 }
 
 // New returns a Claude provider. If model is empty, claude-3-5-sonnet is used.
@@ -33,11 +33,14 @@ func New(apiKey, model string) *Provider {
 	if model == "" {
 		model = defaultModel
 	}
-	return &Provider{APIKey: apiKey, Model: model}
+	return &Provider{APIKey: apiKey, model: model}
 }
 
 // Name satisfies the AIProvider interface.
 func (p *Provider) Name() string { return "claude" }
+
+// Model returns the configured model identifier.
+func (p *Provider) Model() string { return p.model }
 
 // Disabled returns true when the API key is not configured.
 func (p *Provider) Disabled() bool {
@@ -56,7 +59,7 @@ func (p *Provider) Generate(prompt string) (string, error) {
 // GenerateWithMetadata sends prompt to Anthropic and returns text with usage.
 func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(messagesRequest{
-		Model:     p.Model,
+		Model:     p.model,
 		MaxTokens: defaultMaxTokens,
 		Messages:  []message{{Role: "user", Content: prompt}},
 	})
@@ -102,7 +105,7 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 		},
 		Metadata: plugins.CallMetadata{
 			Provider:  p.Name(),
-			Model:     fallbackModel(mr.Model, p.Model),
+			Model:     fallbackModel(mr.Model, p.model),
 			RequestID: mr.ID,
 			At:        time.Now().UTC(),
 		},
@@ -112,7 +115,7 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 // StreamGenerate sends prompt to Anthropic and emits buffered text chunks.
 func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) error {
 	body, err := json.Marshal(messagesRequest{
-		Model:     p.Model,
+		Model:     p.model,
 		MaxTokens: defaultMaxTokens,
 		Messages:  []message{{Role: "user", Content: prompt}},
 		Stream:    true,

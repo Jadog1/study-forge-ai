@@ -11,6 +11,7 @@ import (
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/orchestrator"
+	"github.com/studyforge/study-agent/internal/state"
 )
 
 // WorkflowKind identifies which in-app workflow operation is active.
@@ -28,6 +29,7 @@ type workflowStep int
 
 const (
 	stepInput   workflowStep = iota // collecting user input
+	stepConfirm                     // confirming critical settings (e.g., embeddings disabled)
 	stepRunning                     // async operation in progress
 	stepDone                        // finished; waiting for dismissal
 )
@@ -41,7 +43,10 @@ type WorkflowModel struct {
 	// Input fields shared or used per workflow kind.
 	pathInput  textinput.Model // folder path (ingest only)
 	classInput textinput.Model // class name (ingest/generate/adapt)
-	fieldIdx   int             // focused field index within ingest (0=path, 1=class)
+	fieldIdx   int             // focused field index within ingest (0=path, 1=class, 2=clean checkbox)
+
+	// Ingest-specific options.
+	cleanBeforeIngest bool // if true, delete all previous ingestion data before starting
 
 	// Live agent-step display populated during stepRunning for streaming workflows.
 	actionLines   []string // one entry per tool action invoked so far
@@ -51,6 +56,10 @@ type WorkflowModel struct {
 	pendingResult string   // accumulated text parts arriving before done
 	doneOffset    int      // top line offset for wrapped done/error content
 	doneRows      int      // viewport line count for wrapped done/error content
+
+	// Confirmation step display.
+	confirmType string // what we're confirming (e.g., "embeddings_disabled")
+	confirmMsg  string // message to show user
 
 	// Outcome display.
 	result string
@@ -94,6 +103,7 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.doneRows = 8
 	w.pathInput.SetValue("")
 	w.classInput.SetValue(defaultClass)
+	w.cleanBeforeIngest = false
 
 	switch kind {
 	case WorkflowIngest:
@@ -131,6 +141,8 @@ func (w WorkflowModel) Update(msg tea.Msg, orc *orchestrator.Orchestrator, cfg *
 	switch w.step {
 	case stepInput:
 		return w.updateInput(msg, orc, cfg)
+	case stepConfirm:
+		return w.updateConfirm(msg, orc, cfg)
 	case stepRunning:
 		return w.updateRunning(msg)
 	case stepDone:
@@ -146,19 +158,46 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			w.visible = false
 			return w, false, "Workflow cancelled", nil
 		case "tab":
-			// Ingest has two fields; cycle focus between them.
+			// Ingest has three fields; cycle focus between them (tab/shift+tab).
 			if w.kind == WorkflowIngest {
-				if w.fieldIdx == 0 {
-					w.fieldIdx = 1
-					w.pathInput.Blur()
-					w.classInput.Focus()
-				} else {
-					w.fieldIdx = 0
-					w.classInput.Blur()
-					w.pathInput.Focus()
-				}
+				w.fieldIdx = (w.fieldIdx + 1) % 3
+				w.updateIngestFieldFocus()
 			}
 			return w, false, "", nil
+		case "shift+tab":
+			// Navigate backwards through fields
+			if w.kind == WorkflowIngest {
+				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
+				w.updateIngestFieldFocus()
+			}
+			return w, false, "", nil
+		case "up":
+			// Navigate up between fields
+			if w.kind == WorkflowIngest {
+				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
+				w.updateIngestFieldFocus()
+			}
+			return w, false, "", nil
+		case "down":
+			// Navigate down between fields
+			if w.kind == WorkflowIngest {
+				w.fieldIdx = (w.fieldIdx + 1) % 3
+				w.updateIngestFieldFocus()
+			}
+			return w, false, "", nil
+		case "left", "right":
+			// Toggle checkbox on left/right when on clean field
+			if w.kind == WorkflowIngest && w.fieldIdx == 2 {
+				w.cleanBeforeIngest = !w.cleanBeforeIngest
+			}
+			return w, false, "", nil
+		case "space":
+			// Toggle checkbox on space when on clean field
+			if w.kind == WorkflowIngest && w.fieldIdx == 2 {
+				w.cleanBeforeIngest = !w.cleanBeforeIngest
+				return w, false, "", nil
+			}
+			// Otherwise, pass through to current field
 		case "enter":
 			return w.startWorkflow(orc, cfg)
 		}
@@ -172,37 +211,103 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 		w.classInput, cmd = w.classInput.Update(msg)
 	}
 	return w, false, "", cmd
+
+}
+
+func (w *WorkflowModel) updateIngestFieldFocus() {
+	w.pathInput.Blur()
+	w.classInput.Blur()
+	switch w.fieldIdx {
+	case 0:
+		w.pathInput.Focus()
+	case 1:
+		w.classInput.Focus()
+	case 2:
+		// Clean checkbox doesn't get focus, just highlight
+	}
 }
 
 func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config.Config) (WorkflowModel, bool, string, tea.Cmd) {
 	class := strings.TrimSpace(w.classInput.Value())
-	var cmd tea.Cmd
 
 	switch w.kind {
 	case WorkflowIngest:
 		path := strings.TrimSpace(w.pathInput.Value())
-		if path == "" {
-			return w, false, "Folder path is required", nil
-		}
-		w.step = stepRunning
-		cmd = runIngestCmd(path, class, orc, cfg)
+		return w.runIngestWorkflow(path, class, orc, cfg, true)
 
 	case WorkflowGenerate:
 		if class == "" {
 			return w, false, "Class name is required", nil
 		}
 		w.step = stepRunning
-		cmd = runGenerateCmd(class, nil, orc, cfg)
+		return w, true, "Running " + w.title() + "…", runGenerateCmd(class, nil, orc, cfg)
 
 	case WorkflowAdapt:
 		if class == "" {
 			return w, false, "Class name is required", nil
 		}
 		w.step = stepRunning
-		cmd = runAdaptCmd(class, orc, cfg)
+		return w, true, "Running " + w.title() + "…", runAdaptCmd(class, orc, cfg)
 	}
 
-	return w, true, "Running " + w.title() + "…", cmd
+	return w, false, "", nil
+}
+
+func (w WorkflowModel) runIngestWorkflow(path, class string, orc *orchestrator.Orchestrator, cfg *config.Config, requireEmbeddingsConfirm bool) (WorkflowModel, bool, string, tea.Cmd) {
+	if path == "" {
+		return w, false, "Folder path is required", nil
+	}
+
+	if requireEmbeddingsConfirm && orc.EmbeddingProvider.Disabled() {
+		w.step = stepConfirm
+		w.confirmType = "embeddings_disabled"
+		w.confirmMsg = fmt.Sprintf(
+			"Embeddings are not configured (provider: %s).\nDeduplication and semantic consolidation will NOT happen.\n\nContinue anyway?",
+			orc.EmbeddingProvider.Name(),
+		)
+		return w, false, "", nil
+	}
+
+	if w.cleanBeforeIngest {
+		if err := state.ClearIngestedData(); err != nil {
+			return w, false, fmt.Sprintf("Failed to clear ingestion data: %v", err), nil
+		}
+	}
+
+	w.step = stepRunning
+	return w, true, "Running " + w.title() + "…", runIngestCmd(path, class, orc, cfg)
+}
+
+func (w WorkflowModel) updateConfirm(msg tea.Msg, orc *orchestrator.Orchestrator, cfg *config.Config) (WorkflowModel, bool, string, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "enter":
+			// User confirmed; proceed with workflow
+			var cmd tea.Cmd
+			class := strings.TrimSpace(w.classInput.Value())
+			path := strings.TrimSpace(w.pathInput.Value())
+
+			switch w.kind {
+			case WorkflowIngest:
+				return w.runIngestWorkflow(path, class, orc, cfg, false)
+			case WorkflowGenerate:
+				w.step = stepRunning
+				cmd = runGenerateCmd(class, nil, orc, cfg)
+			case WorkflowAdapt:
+				w.step = stepRunning
+				cmd = runAdaptCmd(class, orc, cfg)
+			}
+			return w, true, "Running " + w.title() + "…", cmd
+
+		case "esc":
+			// User cancelled; go back to input
+			w.step = stepInput
+			w.confirmType = ""
+			w.confirmMsg = ""
+			return w, false, "Cancelled", nil
+		}
+	}
+	return w, false, "", nil
 }
 
 func (w WorkflowModel) updateRunning(msg tea.Msg) (WorkflowModel, bool, string, tea.Cmd) {
@@ -429,6 +534,8 @@ func (w WorkflowModel) View(width, height int) string {
 	switch w.step {
 	case stepInput:
 		b.WriteString(w.viewInputStep())
+	case stepConfirm:
+		b.WriteString(w.viewConfirmStep())
 	case stepRunning:
 		b.WriteString(warnStyle.Render("Running, please wait…") + "\n")
 		visible := w.visibleActionLines()
@@ -484,6 +591,14 @@ func (w WorkflowModel) View(width, height int) string {
 	return workflowStyle.Width(innerWidth).Height(innerHeight).Render(content)
 }
 
+func (w WorkflowModel) viewConfirmStep() string {
+	var b strings.Builder
+	b.WriteString(warnStyle.Render("⚠ Confirm Settings") + "\n\n")
+	b.WriteString(w.confirmMsg + "\n\n")
+	b.WriteString(dimStyle.Render("Enter to continue  •  Esc to go back"))
+	return b.String()
+}
+
 func (w WorkflowModel) viewInputStep() string {
 	var b strings.Builder
 	switch w.kind {
@@ -492,8 +607,17 @@ func (w WorkflowModel) viewInputStep() string {
 		b.WriteString(w.pathInput.View() + "\n\n")
 		b.WriteString(labelStyle.Render("Class (optional):") + "\n")
 		b.WriteString(w.classInput.View() + "\n\n")
-		b.WriteString(dimStyle.Render("Tab switches fields  •  Enter to start  •  Esc to cancel"))
-
+		b.WriteString(labelStyle.Render("Clean before ingest:") + "\n")
+		checkboxStyle := dimStyle
+		if w.fieldIdx == 2 {
+			checkboxStyle = warnStyle
+		}
+		checkMark := "[ ]"
+		if w.cleanBeforeIngest {
+			checkMark = "[✓]"
+		}
+		b.WriteString(checkboxStyle.Render(checkMark + " Delete all previous ingestion data and start fresh\n\n"))
+		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to start  •  Esc to cancel"))
 	case WorkflowGenerate, WorkflowAdapt:
 		b.WriteString(labelStyle.Render("Class name:") + "\n")
 		if classes, _ := classpkg.List(); len(classes) > 0 {

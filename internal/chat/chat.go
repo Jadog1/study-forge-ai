@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/quiz"
 	"github.com/studyforge/study-agent/internal/search"
 	"github.com/studyforge/study-agent/internal/sfq"
+	"github.com/studyforge/study-agent/internal/state"
+	"github.com/studyforge/study-agent/internal/tracking"
 	"github.com/studyforge/study-agent/plugins"
 )
 
@@ -207,9 +211,22 @@ Keep answers grounded in the available notes and class context.`
 func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt string, onEvent func(StreamEvent) error) (string, error) {
 	transcript := prompt
 	for step := 0; step < 4; step++ {
-		resp, streamed, err := generateAgentResponse(provider, transcript, onEvent)
+		resp, streamed, usage, err := generateAgentResponse(provider, transcript, onEvent)
 		if err != nil {
 			return "", fmt.Errorf("chat generate: %w", err)
+		}
+		if usage.Metadata.Provider != "" {
+			_ = state.AppendUsageEvent(state.UsageEvent{
+				Operation:    "chat",
+				Provider:     usage.Metadata.Provider,
+				Model:        usage.Metadata.Model,
+				RequestID:    usage.Metadata.RequestID,
+				InputTokens:  usage.Usage.InputTokens,
+				OutputTokens: usage.Usage.OutputTokens,
+				TotalTokens:  usage.Usage.TotalTokens,
+				CostUSD:      config.CostForTokens(usage.Metadata.Model, usage.Usage.InputTokens, usage.Usage.OutputTokens, cfg),
+				Class:        className,
+			})
 		}
 
 		call, found, err := extractToolCall(resp)
@@ -257,28 +274,128 @@ func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt
 	return "", fmt.Errorf("chat agent exceeded tool-call limit")
 }
 
-func generateAgentResponse(provider plugins.AIProvider, prompt string, onEvent func(StreamEvent) error) (string, bool, error) {
+func generateAgentResponse(provider plugins.AIProvider, prompt string, onEvent func(StreamEvent) error) (string, bool, plugins.GenerateResult, error) {
 	if onEvent == nil {
-		resp, err := provider.Generate(prompt)
-		return resp, false, err
+		text, result, err := chatGenerateWithMetadata(provider, prompt)
+		return text, false, result, err
 	}
 
 	streamer, ok := provider.(plugins.StreamingAIProvider)
 	if !ok {
-		resp, err := provider.Generate(prompt)
-		return resp, false, err
+		text, result, err := chatGenerateWithMetadata(provider, prompt)
+		return text, false, result, err
+	}
+	if usageStreamer, ok := provider.(plugins.StreamingUsageAwareAIProvider); ok {
+		result, err := streamProviderResponseWithMetadata(usageStreamer, prompt, onEvent)
+		if err != nil {
+			return "", true, plugins.GenerateResult{}, err
+		}
+		return result.Text, true, result, nil
 	}
 
 	resp, err := streamProviderResponse(streamer, prompt, onEvent)
-	return resp, true, err
+	if err != nil {
+		return "", true, plugins.GenerateResult{}, err
+	}
+	inputTokens := len(strings.Fields(prompt))
+	outputTokens := len(strings.Fields(resp))
+	result := plugins.GenerateResult{
+		Text: resp,
+		Usage: plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider: provider.Name(),
+			Model:    provider.Model(),
+			At:       time.Now().UTC(),
+		},
+	}
+	return resp, true, result, nil
+}
+
+func chatGenerateWithMetadata(provider plugins.AIProvider, prompt string) (string, plugins.GenerateResult, error) {
+	if usageAware, ok := provider.(plugins.UsageAwareAIProvider); ok {
+		result, err := usageAware.GenerateWithMetadata(prompt)
+		if err != nil {
+			return "", plugins.GenerateResult{}, err
+		}
+		if result.Metadata.At.IsZero() {
+			result.Metadata.At = time.Now().UTC()
+		}
+		if result.Metadata.Provider == "" {
+			result.Metadata.Provider = provider.Name()
+		}
+		return result.Text, result, nil
+	}
+	text, err := provider.Generate(prompt)
+	if err != nil {
+		return "", plugins.GenerateResult{}, err
+	}
+	inputTokens := len(strings.Fields(prompt))
+	outputTokens := len(strings.Fields(text))
+	return text, plugins.GenerateResult{
+		Text: text,
+		Usage: plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider: provider.Name(),
+			Model:    provider.Model(),
+			At:       time.Now().UTC(),
+		},
+	}, nil
 }
 
 func streamProviderResponse(provider plugins.StreamingAIProvider, prompt string, onEvent func(StreamEvent) error) (string, error) {
+	return streamProviderResponseWith(prompt, onEvent, func(onChunk func(string) error) error {
+		return provider.StreamGenerate(prompt, onChunk)
+	})
+}
+
+func streamProviderResponseWithMetadata(provider plugins.StreamingUsageAwareAIProvider, prompt string, onEvent func(StreamEvent) error) (plugins.GenerateResult, error) {
+	var result plugins.GenerateResult
+	resp, err := streamProviderResponseWith(prompt, onEvent, func(onChunk func(string) error) error {
+		streamResult, streamErr := provider.StreamGenerateWithMetadata(prompt, onChunk)
+		result = streamResult
+		return streamErr
+	})
+	if err != nil {
+		return plugins.GenerateResult{}, err
+	}
+	if strings.TrimSpace(result.Text) == "" {
+		result.Text = resp
+	}
+	if result.Usage.TotalTokens == 0 && (result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0) {
+		inputTokens := len(strings.Fields(prompt))
+		outputTokens := len(strings.Fields(result.Text))
+		result.Usage = plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		}
+	}
+	if result.Metadata.Provider == "" {
+		result.Metadata.Provider = provider.Name()
+	}
+	if result.Metadata.Model == "" {
+		result.Metadata.Model = provider.Model()
+	}
+	if result.Metadata.At.IsZero() {
+		result.Metadata.At = time.Now().UTC()
+	}
+	return result, nil
+}
+
+func streamProviderResponseWith(prompt string, onEvent func(StreamEvent) error, streamFn func(onChunk func(string) error) error) (string, error) {
 	var full strings.Builder
 	var pending strings.Builder
 	released := false
 
-	err := provider.StreamGenerate(prompt, func(part string) error {
+	err := streamFn(func(part string) error {
 		if part == "" {
 			return nil
 		}
@@ -518,7 +635,23 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Quiz generated and saved to %s\nTitle: %s\nQuestions: %d", path, q.Title, len(q.Sections)), nil
+		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
+		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
+		if _, cacheErr := state.RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
+			return fmt.Sprintf("Quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked cache warning: %v", path, quizID, q.Title, len(q.Sections), cacheErr), nil
+		}
+		report, syncErr := tracking.SyncTrackedQuizSessions()
+		sfqErr := sfq.Track(sfqPath)
+		syncSummary := ""
+		if syncErr != nil {
+			syncSummary = "\nSession sync warning: " + syncErr.Error()
+		} else {
+			syncSummary = fmt.Sprintf("\nImported sessions: %d\nPending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
+		}
+		if sfqErr != nil {
+			return fmt.Sprintf("Quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked session could not start: %v%s", path, quizID, q.Title, len(q.Sections), sfqErr, syncSummary), nil
+		}
+		return fmt.Sprintf("Quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked quiz session started in browser.%s", path, quizID, q.Title, len(q.Sections), syncSummary), nil
 	case "adapt_quiz":
 		targetClass := toolString(call.Arguments, "class")
 		if targetClass == "" {
@@ -531,7 +664,23 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Adaptive quiz generated and saved to %s\nTitle: %s\nQuestions: %d", path, q.Title, len(q.Sections)), nil
+		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
+		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
+		if _, cacheErr := state.RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
+			return fmt.Sprintf("Adaptive quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked cache warning: %v", path, quizID, q.Title, len(q.Sections), cacheErr), nil
+		}
+		report, syncErr := tracking.SyncTrackedQuizSessions()
+		sfqErr := sfq.Track(sfqPath)
+		syncSummary := ""
+		if syncErr != nil {
+			syncSummary = "\nSession sync warning: " + syncErr.Error()
+		} else {
+			syncSummary = fmt.Sprintf("\nImported sessions: %d\nPending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
+		}
+		if sfqErr != nil {
+			return fmt.Sprintf("Adaptive quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked session could not start: %v%s", path, quizID, q.Title, len(q.Sections), sfqErr, syncSummary), nil
+		}
+		return fmt.Sprintf("Adaptive quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked quiz session started in browser.%s", path, quizID, q.Title, len(q.Sections), syncSummary), nil
 	case "list_classes":
 		names, err := classpkg.List()
 		if err != nil {

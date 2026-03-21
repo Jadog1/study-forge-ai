@@ -11,6 +11,8 @@ type AIProvider interface {
 	Generate(prompt string) (string, error)
 	// Name returns a human-readable identifier for the provider.
 	Name() string
+	// Model returns the model identifier used by this provider.
+	Model() string
 	// Disabled returns true when the provider cannot accept requests,
 	// e.g. the API key is not configured or the endpoint is unreachable.
 	Disabled() bool
@@ -56,11 +58,22 @@ type StreamingAIProvider interface {
 	StreamGenerate(prompt string, onChunk func(string) error) error
 }
 
+// StreamingUsageAwareAIProvider extends streaming generation with usage
+// metadata for providers that can report token counts on streamed responses.
+type StreamingUsageAwareAIProvider interface {
+	StreamingAIProvider
+	// StreamGenerateWithMetadata streams chunks and returns a final generation
+	// result including usage and metadata when available.
+	StreamGenerateWithMetadata(prompt string, onChunk func(string) error) (GenerateResult, error)
+}
+
 // EmbeddingProvider is an optional extension interface for providers that can
 // produce numeric embeddings for one or more text inputs.
 type EmbeddingProvider interface {
 	// Name returns a human-readable identifier for the provider.
 	Name() string
+	// Model returns the model identifier used by this provider.
+	Model() string
 	// Disabled returns true when the provider cannot accept requests.
 	Disabled() bool
 	// Embed returns one embedding vector per input text, preserving order.

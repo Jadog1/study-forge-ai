@@ -24,7 +24,7 @@ const (
 // Provider sends prompts to the OpenAI Chat Completions endpoint.
 type Provider struct {
 	APIKey string
-	Model  string
+	model  string
 }
 
 // New returns an OpenAI provider. If model is empty, gpt-4o is used.
@@ -32,11 +32,14 @@ func New(apiKey, model string) *Provider {
 	if model == "" {
 		model = defaultModel
 	}
-	return &Provider{APIKey: apiKey, Model: model}
+	return &Provider{APIKey: apiKey, model: model}
 }
 
 // Name satisfies the AIProvider interface.
 func (p *Provider) Name() string { return "openai" }
+
+// Model returns the configured model identifier.
+func (p *Provider) Model() string { return p.model }
 
 // Disabled returns true when the API key is not configured.
 func (p *Provider) Disabled() bool {
@@ -55,7 +58,7 @@ func (p *Provider) Generate(prompt string) (string, error) {
 // GenerateWithMetadata sends prompt to OpenAI and returns text with model usage.
 func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:    p.Model,
+		Model:    p.model,
 		Messages: []message{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
@@ -99,7 +102,7 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 		},
 		Metadata: plugins.CallMetadata{
 			Provider:  p.Name(),
-			Model:     coalesceString(cr.Model, p.Model),
+			Model:     coalesceString(cr.Model, p.model),
 			RequestID: cr.ID,
 			At:        time.Now().UTC(),
 		},
@@ -109,7 +112,7 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 // StreamGenerate sends prompt to OpenAI and emits buffered content chunks.
 func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) error {
 	body, err := json.Marshal(chatRequest{
-		Model:    p.Model,
+		Model:    p.model,
 		Messages: []message{{Role: "user", Content: prompt}},
 		Stream:   true,
 	})
@@ -184,7 +187,7 @@ func (p *Provider) Embed(input []string) ([][]float64, error) {
 // EmbedWithMetadata sends one or more texts to OpenAI and returns vectors with usage.
 func (p *Provider) EmbedWithMetadata(input []string) (plugins.EmbedResult, error) {
 	body, err := json.Marshal(embeddingsRequest{
-		Model: p.Model,
+		Model: p.model,
 		Input: input,
 	})
 	if err != nil {
@@ -240,7 +243,7 @@ func (p *Provider) EmbedWithMetadata(input []string) (plugins.EmbedResult, error
 		},
 		Metadata: plugins.CallMetadata{
 			Provider: p.Name(),
-			Model:    coalesceString(er.Model, p.Model),
+			Model:    coalesceString(er.Model, p.model),
 			At:       time.Now().UTC(),
 		},
 	}, nil

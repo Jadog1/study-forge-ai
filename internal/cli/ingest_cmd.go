@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/studyforge/study-agent/internal/config"
@@ -26,6 +29,20 @@ var ingestCmd = &cobra.Command{
 		orc, err := orchestrator.New(cfg)
 		if err != nil {
 			return err
+		}
+
+		// Check if embeddings are disabled and warn user
+		if orc.EmbeddingProvider.Disabled() {
+			fmt.Println("⚠ WARNING: Embeddings are not configured or disabled.")
+			fmt.Println("  This means deduplication and semantic knowledge consolidation will NOT happen.")
+			fmt.Printf("  Provider: %s (config: %s@%s)\n", orc.EmbeddingProvider.Name(), cfg.Embeddings.Provider, cfg.Embeddings.Model)
+			fmt.Println("\nTo enable embeddings, configure it in your settings or ~/.study-forge-ai/config.yaml")
+			fmt.Print("Continue without embeddings? (y/N) ")
+			scanner := bufio.NewScanner(os.Stdin)
+			if !scanner.Scan() || !strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
+				return fmt.Errorf("ingestion cancelled")
+			}
+			fmt.Println()
 		}
 
 		fmt.Printf("Ingesting notes from %q", folderPath)

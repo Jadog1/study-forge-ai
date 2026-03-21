@@ -19,7 +19,7 @@ const embeddingsPath = "/v1/embeddings"
 // EmbeddingProvider sends OpenAI-compatible embeddings requests to a local endpoint.
 type EmbeddingProvider struct {
 	Endpoint string
-	Model    string
+	model    string
 }
 
 // NewEmbeddingProvider returns a local embeddings provider.
@@ -30,11 +30,14 @@ func NewEmbeddingProvider(endpoint, model string) *EmbeddingProvider {
 	if model == "" {
 		model = defaultModel
 	}
-	return &EmbeddingProvider{Endpoint: endpoint, Model: model}
+	return &EmbeddingProvider{Endpoint: endpoint, model: model}
 }
 
 // Name satisfies plugins.EmbeddingProvider.
 func (p *EmbeddingProvider) Name() string { return "local" }
+
+// Model returns the configured model identifier.
+func (p *EmbeddingProvider) Model() string { return p.model }
 
 // Disabled returns true when no endpoint is configured.
 func (p *EmbeddingProvider) Disabled() bool {
@@ -61,7 +64,7 @@ func (p *EmbeddingProvider) EmbedWithMetadata(input []string) (plugins.EmbedResu
 		Model string   `json:"model"`
 		Input []string `json:"input"`
 	}{
-		Model: p.Model,
+		Model: p.model,
 		Input: input,
 	})
 	if err != nil {
@@ -144,7 +147,7 @@ func (p *EmbeddingProvider) EmbedWithMetadata(input []string) (plugins.EmbedResu
 		},
 		Metadata: plugins.CallMetadata{
 			Provider: p.Name(),
-			Model:    chooseModel(response.Model, p.Model),
+			Model:    chooseModel(response.Model, p.model),
 			At:       time.Now().UTC(),
 		},
 	}, nil

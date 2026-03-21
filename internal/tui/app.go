@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -134,6 +135,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Usage refreshed"
 		}
 		return m, nil
+
+	case trackedSyncDoneMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = "Tracked sync failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.status = "Tracked sync complete: imported " + strconv.Itoa(msg.report.ImportedSessions) + ", pending " + strconv.Itoa(msg.report.PendingQuizzes)
+		return m, nil
 	}
 
 	// Global key bindings.
@@ -263,6 +273,10 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 	case "sfq-search":
 		m.activeTab = tabSFQ
 		m.status = "SFQ Search"
+	case "sync-tracked":
+		m.busy = true
+		m.status = "Syncing tracked quiz sessions..."
+		return m, syncTrackedSessionsCmd()
 	case "usage":
 		m.activeTab = tabUsage
 		m.usage = m.usage.startLoading()

@@ -21,7 +21,7 @@ const (
 // Provider sends embedding requests to VoyageAI.
 type Provider struct {
 	APIKey string
-	Model  string
+	model  string
 }
 
 // New returns a Voyage embeddings provider.
@@ -29,11 +29,14 @@ func New(apiKey, model string) *Provider {
 	if model == "" {
 		model = defaultModel
 	}
-	return &Provider{APIKey: apiKey, Model: model}
+	return &Provider{APIKey: apiKey, model: model}
 }
 
 // Name satisfies plugins.EmbeddingProvider.
 func (p *Provider) Name() string { return "voyage" }
+
+// Model returns the configured model identifier.
+func (p *Provider) Model() string { return p.model }
 
 // Disabled returns true when the API key is not configured.
 func (p *Provider) Disabled() bool {
@@ -55,7 +58,7 @@ func (p *Provider) EmbedWithMetadata(input []string) (plugins.EmbedResult, error
 		Model string   `json:"model"`
 		Input []string `json:"input"`
 	}{
-		Model: p.Model,
+		Model: p.model,
 		Input: input,
 	})
 	if err != nil {
@@ -140,7 +143,7 @@ func (p *Provider) EmbedWithMetadata(input []string) (plugins.EmbedResult, error
 		},
 		Metadata: plugins.CallMetadata{
 			Provider: p.Name(),
-			Model:    firstNonEmpty(parsed.Model, p.Model),
+			Model:    firstNonEmpty(parsed.Model, p.model),
 			At:       time.Now().UTC(),
 		},
 	}, nil

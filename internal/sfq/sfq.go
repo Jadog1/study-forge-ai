@@ -35,6 +35,17 @@ func Generate(quizPath string) error {
 	return nil
 }
 
+// Track starts `sfq track <quizPath>` to run a tracked local quiz session.
+// Tracked mode persists answers and score so history/results can be queried.
+func Track(quizPath string) error {
+	cmd := exec.Command("sfq", "track", quizPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("sfq track failed: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // Schema returns the quiz YAML schema for use as AI formatting guidance.
 // It tries the configured sfq binary's "schema" sub-command first; if the
 // command is empty or the binary is unavailable, the built-in schema is
@@ -69,6 +80,8 @@ sections:
     component_id: "<source component id if known, e.g. cmp-abc12345 — omit if unknown>"
     tags:
       - "<tag>"
+			- "src_section:<section-id>"
+			- "src_component:<component-id>"
   - type: "question"
     id: "q-002"
     question: "<next question>"
@@ -77,13 +90,16 @@ sections:
     reasoning: "<reasoning>"
     section_id: "<source section id or omit>"
     component_id: "<source component id or omit>"
-    tags:
-      - "<tag>"
+		tags:
+			- "<tag>"
+			- "src_section:<section-id when known>"
+			- "src_component:<component-id when known>"
 
 Rules:
 - All non-optional string values must be non-empty.
 - section id values must be unique and sequential: q-001, q-002, q-003, etc.
 - sections must contain at least one entry.
 - section_id and component_id are optional; include them only when the study material identifies the source knowledge section or component.
+- When section_id/component_id are present, include matching tags with prefixes src_section: and src_component:.
 - Do not add any fields beyond those listed above.
 - Respond with ONLY the YAML document, nothing else.`

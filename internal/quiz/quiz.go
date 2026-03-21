@@ -17,6 +17,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	provenanceTagSectionPrefix   = "src_section:"
+	provenanceTagComponentPrefix = "src_component:"
+)
+
 // ProgressEvent carries a quiz-generation progress update emitted during the
 // agent loop so callers can show live tool-call feedback.
 type ProgressEvent struct {
@@ -140,6 +145,8 @@ func runQuizAgent(class, prefix string, provider plugins.AIProvider, cfg *config
 			continue
 		}
 
+		normalizeQuizProvenance(&q)
+
 		return saveQuiz(class, prefix, &q)
 	}
 	return nil, "", fmt.Errorf("quiz agent exceeded %d steps without producing valid output", maxSteps)
@@ -165,6 +172,7 @@ func buildQuizAgentPrompt(class string, summaries []string, numQuestions int, we
 	}
 	if len(knowledgeCtx) > 0 {
 		b.WriteString("\nKnowledge base context (include section_id and component_id in questions when the source is identifiable):\n")
+		b.WriteString("Also add tags with these prefixes for easy parsing: src_section:<section-id> and src_component:<component-id>.\n")
 		for _, line := range knowledgeCtx {
 			b.WriteString(line + "\n")
 		}
@@ -255,6 +263,50 @@ func cleanYAML(resp string) string {
 	}
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+func normalizeQuizProvenance(q *state.Quiz) {
+	if q == nil {
+		return
+	}
+	for i := range q.Sections {
+		sectionIDFromTag, componentIDFromTag := extractProvenanceFromTags(q.Sections[i].Tags)
+		if strings.TrimSpace(q.Sections[i].SectionID) == "" {
+			q.Sections[i].SectionID = sectionIDFromTag
+		}
+		if strings.TrimSpace(q.Sections[i].ComponentID) == "" {
+			q.Sections[i].ComponentID = componentIDFromTag
+		}
+		if q.Sections[i].SectionID != "" && !hasPrefixedTag(q.Sections[i].Tags, provenanceTagSectionPrefix, q.Sections[i].SectionID) {
+			q.Sections[i].Tags = append(q.Sections[i].Tags, provenanceTagSectionPrefix+q.Sections[i].SectionID)
+		}
+		if q.Sections[i].ComponentID != "" && !hasPrefixedTag(q.Sections[i].Tags, provenanceTagComponentPrefix, q.Sections[i].ComponentID) {
+			q.Sections[i].Tags = append(q.Sections[i].Tags, provenanceTagComponentPrefix+q.Sections[i].ComponentID)
+		}
+	}
+}
+
+func extractProvenanceFromTags(tags []string) (sectionID, componentID string) {
+	for _, tag := range tags {
+		normalized := strings.TrimSpace(tag)
+		if sectionID == "" && strings.HasPrefix(strings.ToLower(normalized), provenanceTagSectionPrefix) {
+			sectionID = strings.TrimSpace(normalized[len(provenanceTagSectionPrefix):])
+		}
+		if componentID == "" && strings.HasPrefix(strings.ToLower(normalized), provenanceTagComponentPrefix) {
+			componentID = strings.TrimSpace(normalized[len(provenanceTagComponentPrefix):])
+		}
+	}
+	return sectionID, componentID
+}
+
+func hasPrefixedTag(tags []string, prefix, value string) bool {
+	needle := strings.ToLower(strings.TrimSpace(prefix + value))
+	for _, tag := range tags {
+		if strings.ToLower(strings.TrimSpace(tag)) == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func saveQuiz(class, prefix string, q *state.Quiz) (*state.Quiz, string, error) {

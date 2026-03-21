@@ -91,6 +91,7 @@ func (u *unknownProvider) Disabled() bool { return true }
 func (u *unknownProvider) Generate(_ string) (string, error) {
 	return "", fmt.Errorf("unknown provider %q — valid values: openai, claude, local", u.name)
 }
+func (u *unknownProvider) Model() string { return "unknown" }
 
 type unknownEmbeddingProvider struct{ name string }
 
@@ -99,3 +100,4 @@ func (u *unknownEmbeddingProvider) Disabled() bool { return true }
 func (u *unknownEmbeddingProvider) Embed(_ []string) ([][]float64, error) {
 	return nil, fmt.Errorf("unknown embeddings provider %q — valid values: openai, voyage, local", u.name)
 }
+func (u *unknownEmbeddingProvider) Model() string { return "unknown" }
