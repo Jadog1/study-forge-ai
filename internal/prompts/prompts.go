@@ -50,134 +50,192 @@ concepts:
 `, header, content)
 }
 
-// GenerateQuestions builds a prompt that produces a complete quiz YAML document
-// from a set of note summaries.
-//
-// weakAreas lists topic tags the student has previously struggled with; the
-// model is asked to give them extra coverage.
-func GenerateQuestions(summaries []string, class, customContext string, numQuestions int, weakAreas []string) string {
-	notesBlock := buildNotesBlock(summaries)
-
-	var extras []string
-	if len(weakAreas) > 0 {
-		extras = append(extras, fmt.Sprintf("Focus extra attention on these weak areas: %s", strings.Join(weakAreas, ", ")))
-	}
-	if customContext != "" {
-		extras = append(extras, "Additional instructions:\n"+customContext)
-	}
-	extra := ""
-	if len(extras) > 0 {
-		extra = "\n" + strings.Join(extras, "\n")
-	}
-
-	return fmt.Sprintf(`You are a study assistant generating a quiz for class: %s.
-Generate exactly %d questions that test conceptual understanding, not rote memorisation.
-Prefer questions that require reasoning, real-world application, or analogy.%s
-
-Study material:
-%s
-
-Output rules:
-- Return plain YAML only.
-- Do NOT use markdown code fences.
-- Do NOT include any leading or trailing commentary.
-- The first character of your response must be t from title:.
-
-Return ONLY valid YAML using this exact structure:
-title: <descriptive quiz title>
-class: %s
-tags:
-  - <tag>
-sections:
-  - type: question
-    id: q-001
-    question: <question text>
-    hint: <helpful nudge without giving the answer away>
-    answer: <clear, complete answer>
-    reasoning: <explanation of why this answer is correct — deeper insight>
-    tags:
-      - <tag>
-`, class, numQuestions, extra, notesBlock, class)
+// OrchestratorCandidate describes one knowledge component that the orchestrator
+// LLM agent may choose to include in its quiz plan.
+type OrchestratorCandidate struct {
+	ComponentID    string   `json:"component_id"`
+	SectionID      string   `json:"section_id"`
+	SectionTitle   string   `json:"section_title"`
+	SectionSummary string   `json:"section_summary"`
+	Kind           string   `json:"kind"`
+	Content        string   `json:"content"`
+	Concepts       []string `json:"concepts"`
+	Score          float64  `json:"score"`
+	Attempts       int      `json:"attempts"`
+	Accuracy       float64  `json:"accuracy"`
+	DaysSince      float64  `json:"days_since"`
 }
 
-// AdaptQuestions builds a prompt for follow-up adaptive questions focused on
-// areas where the student has shown weakness.
-func AdaptQuestions(class string, weakAreas, pastQuestions []string, customContext string) string {
-	var extras []string
-	if customContext != "" {
-		extras = append(extras, "Additional instructions:\n"+customContext)
+// RecentQuestionEntry is one past question shown to a component agent so it
+// can avoid generating similar questions.
+type RecentQuestionEntry struct {
+	Question   string `json:"question"`
+	Correct    bool   `json:"correct"`
+	AnsweredAt string `json:"answered_at"`
+}
+
+// ComponentQuestionContext is everything a component question agent needs to
+// generate questions for one specific knowledge component.
+type ComponentQuestionContext struct {
+	Class            string
+	SectionID        string
+	SectionTitle     string
+	SectionSummary   string
+	ComponentID      string
+	ComponentKind    string
+	ComponentContent string
+	QuestionCount    int
+	QuestionTypes    []string
+	Angle            string
+	RecentHistory    []RecentQuestionEntry
+}
+
+// OrchestratorPrompt builds the prompt sent to the orchestrator LLM agent.
+// The agent must return a JSON array of directives that assign question counts
+// and types to specific components.
+func OrchestratorPrompt(class string, candidates []OrchestratorCandidate, totalCount int, typePreference, customContext string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are the quiz orchestrator for class: %s.\n", class)
+	fmt.Fprintf(&b, "You must allocate exactly %d questions across the following knowledge components.\n\n", totalCount)
+	fmt.Fprintf(&b, "Default question type: %s\n", typePreference)
+	b.WriteString("Supported types: multiple-choice, multi-select, true-false, multi-true-false, short-answer, ordering\n\n")
+	b.WriteString("Rules:\n")
+	b.WriteString("- Prioritise components with high scores (weak, novel, or not seen recently).\n")
+	b.WriteString("- You MAY choose a different question type per component if the content suits it better.\n")
+	b.WriteString("- The sum of question_count across all directives MUST equal the requested total.\n")
+	b.WriteString("- Assign an 'angle' hint to each directive as a short creative framing for the question writer.\n")
+	b.WriteString("  Example angles: \"relate to everyday experience\", \"compare with <related concept>\",\n")
+	b.WriteString("  \"explain why this matters\", \"predict what happens if...\", \"common misconception\",\n")
+	b.WriteString("  \"connect to <other section>\", \"trace the cause-effect chain\", \"apply to a novel scenario\"\n")
+	b.WriteString("- When two components share concepts or belong to the same section, consider comparative or connecting angles.\n\n")
+
+	// Group candidates by section for richer context.
+	type sectionGroup struct {
+		Title      string
+		Summary    string
+		Candidates []OrchestratorCandidate
+		Indices    []int // original 1-based indices
+	}
+	var sectionOrder []string
+	groups := make(map[string]*sectionGroup)
+	for i, c := range candidates {
+		g, ok := groups[c.SectionID]
+		if !ok {
+			g = &sectionGroup{Title: c.SectionTitle, Summary: c.SectionSummary}
+			groups[c.SectionID] = g
+			sectionOrder = append(sectionOrder, c.SectionID)
+		}
+		g.Candidates = append(g.Candidates, c)
+		g.Indices = append(g.Indices, i+1)
 	}
 
-	pastBlock := ""
-	if len(pastQuestions) > 0 {
-		pastBlock = "\nAvoid repeating these exact questions:\n"
-		for _, q := range pastQuestions {
-			pastBlock += fmt.Sprintf("  - %s\n", q)
+	b.WriteString("Components (grouped by section, sorted by priority score desc):\n")
+	for _, secID := range sectionOrder {
+		g := groups[secID]
+		fmt.Fprintf(&b, "\n── Section: %q", g.Title)
+		if g.Summary != "" {
+			summary := g.Summary
+			if len(summary) > 200 {
+				summary = summary[:197] + "..."
+			}
+			fmt.Fprintf(&b, "\n   Summary: %s", summary)
+		}
+		// Collect shared concepts across components in this section.
+		conceptCounts := make(map[string]int)
+		for _, c := range g.Candidates {
+			for _, concept := range c.Concepts {
+				conceptCounts[concept]++
+			}
+		}
+		var shared []string
+		for concept, count := range conceptCounts {
+			if count > 1 {
+				shared = append(shared, concept)
+			}
+		}
+		if len(shared) > 0 {
+			fmt.Fprintf(&b, "\n   Shared concepts: %s", strings.Join(shared, ", "))
+		}
+		b.WriteString("\n")
+
+		for j, c := range g.Candidates {
+			content := c.Content
+			limit := contentLimitForKind(c.Kind)
+			if len(content) > limit {
+				content = content[:limit-3] + "..."
+			}
+			fmt.Fprintf(&b, "  [%d] component_id=%q kind=%s score=%.3f attempts=%d accuracy=%.0f%% days_since=%.0f\n      %s\n",
+				g.Indices[j], c.ComponentID, c.Kind, c.Score, c.Attempts, c.Accuracy*100, c.DaysSince, content)
 		}
 	}
-
-	extra := strings.Join(extras, "\n")
-	if extra != "" {
-		extra = "\n" + extra
+	b.WriteString("\nRespond with ONLY a JSON array (no prose, no markdown fences):\n")
+	b.WriteString("[\n  {\n    \"component_id\": \"<id>\",\n    \"section_id\": \"<id>\",\n    \"section_title\": \"<title>\",\n    \"question_count\": 1,\n    \"question_types\": [\"<type>\"],\n    \"angle\": \"<framing hint>\"\n  }\n]\n")
+	if customContext != "" {
+		b.WriteString("\nAdditional instructions:\n" + customContext + "\n")
 	}
-
-	return fmt.Sprintf(`You are a study assistant. A student studying %s has shown weakness in: %s.
-Generate 5 new questions that address these weak areas from different angles than before.
-Use real-world analogies where helpful. Focus on conceptual understanding.%s%s
-
-Output rules:
-- Return plain YAML only.
-- Do NOT use markdown code fences.
-- Do NOT include any leading or trailing commentary.
-- The first character of your response must be t from title:.
-
-Return ONLY valid YAML:
-title: Adaptive Review – %s
-class: %s
-tags:
-  - adaptive
-  - review
-sections:
-  - type: question
-    id: q-001
-    question: <question>
-    hint: <hint>
-    answer: <answer>
-    reasoning: <reasoning>
-    tags:
-      - <tag>
-`, class, strings.Join(weakAreas, ", "), extra, pastBlock, class, class)
+	return b.String()
 }
 
-// VariationQuestion creates a reframed version of an existing question that
-// tests the same underlying concept from a new angle.
-func VariationQuestion(originalQuestion, concept, customContext string) string {
-	extra := ""
-	if customContext != "" {
-		extra = "\nAdditional instructions:\n" + customContext
+// ComponentQuestionPrompt builds the prompt sent to an individual component
+// question agent.  The agent must return a YAML list of QuizSection items.
+func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are a question writer for class: %s\n", ctx.Class)
+	fmt.Fprintf(&b, "Section: %q (id: %s)\n", ctx.SectionTitle, ctx.SectionID)
+	if ctx.SectionSummary != "" {
+		fmt.Fprintf(&b, "Section summary: %s\n", ctx.SectionSummary)
 	}
+	fmt.Fprintf(&b, "Component: %s (id: %s, kind: %s)\n", ctx.ComponentContent, ctx.ComponentID, ctx.ComponentKind)
+	fmt.Fprintf(&b, "\nGenerate exactly %d question(s).\n", ctx.QuestionCount)
+	if len(ctx.QuestionTypes) > 0 {
+		fmt.Fprintf(&b, "Preferred question type(s): %s\n", strings.Join(ctx.QuestionTypes, ", "))
+	}
+	if ctx.Angle != "" {
+		fmt.Fprintf(&b, "Framing angle: %s\n", ctx.Angle)
+	}
+	if len(ctx.RecentHistory) > 0 {
+		b.WriteString("\nRecent questions on this component (avoid repetition):\n")
+		for _, h := range ctx.RecentHistory {
+			mark := "x"
+			if h.Correct {
+				mark = "v"
+			}
+			fmt.Fprintf(&b, "  [%s] %s (%s)\n", mark, h.Question, h.AnsweredAt)
+		}
+	}
+	b.WriteString("\nOutput rules:\n")
+	b.WriteString("- Return ONLY a valid YAML list — the first character must be '-'.\n")
+	b.WriteString("- Do NOT use markdown code fences.\n")
+	b.WriteString("- Do NOT include any leading or trailing prose.\n")
+	b.WriteString("- Always set 'section_id' and 'component_id' from the values given above.\n")
+	b.WriteString("- For multiple-choice/multi-select: include a 'choices:' list with 'text:' and 'correct:' fields.\n")
+	b.WriteString("- For true-false/multi-true-false: use choices with 'correct: true/false'.\n")
+	b.WriteString("- For ordering: list choices in correct order; set 'correct: true' for all.\n")
+	b.WriteString("- For short-answer: put the answer text in the 'answer:' field.\n\n")
+	b.WriteString("Example (multiple-choice):\n")
+	b.WriteString("- id: q-001\n  type: multiple-choice\n  question: <question>\n  hint: <nudge>\n  reasoning: <why correct>\n")
+	fmt.Fprintf(&b, "  section_id: %s\n  component_id: %s\n", ctx.SectionID, ctx.ComponentID)
+	fmt.Fprintf(&b, "  tags:\n    - src_section:%s\n    - src_component:%s\n", ctx.SectionID, ctx.ComponentID)
+	b.WriteString("  choices:\n    - text: <correct answer>\n      correct: true\n    - text: <distractor>\n      correct: false\n")
+	if customContext != "" {
+		b.WriteString("\nAdditional instructions:\n" + customContext + "\n")
+	}
+	return b.String()
+}
 
-	return fmt.Sprintf(`Reframe the following quiz question to test the same concept (%s) from a different angle or scenario.
-Keep the difficulty level roughly the same.%s
-
-Original question: %s
-
-Output rules:
-- Return plain YAML only.
-- Do NOT use markdown code fences.
-- Do NOT include any leading or trailing commentary.
-- The first character of your response must be t from type:.
-
-Return ONLY valid YAML:
-type: question
-id: <new-unique-id>
-question: <new question text>
-hint: <hint>
-answer: <answer>
-reasoning: <reasoning>
-tags:
-  - <tag>
-`, concept, extra, originalQuestion)
+// contentLimitForKind returns the maximum content preview length for a given
+// component kind.  Short factual kinds (definition, formula, fact) use a
+// tighter limit; richer kinds get more room so the orchestrator can craft
+// better angle hints.
+func contentLimitForKind(kind string) int {
+	switch kind {
+	case "definition", "formula", "fact":
+		return 150
+	case "concept", "procedure", "example":
+		return 350
+	default:
+		return 200
+	}
 }
 
 // ComposeKnowledge asks the model to decompose a note into learning sections
@@ -262,14 +320,4 @@ Return ONLY valid YAML:
 decision: <merge|keep>
 rationale: <one sentence>
 `, candidateTitle, candidateSummary, existingTitle, existingSummary, extra)
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-func buildNotesBlock(summaries []string) string {
-	var sb strings.Builder
-	for i, s := range summaries {
-		sb.WriteString(fmt.Sprintf("--- Note %d ---\n%s\n", i+1, s))
-	}
-	return sb.String()
 }

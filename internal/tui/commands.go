@@ -125,14 +125,13 @@ func runIngestCmd(folderPath, class string, orc *orchestrator.Orchestrator, cfg 
 	return waitForAIStreamCmd(stream)
 }
 
-// runGenerateCmd generates a new quiz for the given class, streaming agent
-// tool-call events back to the TUI as aiStreamMsgs so the workflow overlay
-// can display live progress.
-func runGenerateCmd(class string, tags []string, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
+// runQuizCmd generates a unified adaptive quiz for the given class, streaming
+// agent tool-call events back to the TUI as aiStreamMsgs.
+func runQuizCmd(class string, opts quiz.QuizOptions, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
 	stream := make(chan aiStreamEvent, 32)
 	go func() {
 		defer close(stream)
-		q, path, err := quiz.GenerateStream(class, tags, orc.Provider, cfg, func(e quiz.ProgressEvent) {
+		q, path, err := quiz.NewQuizStream(class, opts, orc.Provider, cfg, func(e quiz.ProgressEvent) {
 			stream <- aiStreamEvent{
 				actionLabel: e.Label,
 				actionInfo:  e.Detail,
@@ -162,54 +161,7 @@ func runGenerateCmd(class string, tags []string, orc *orchestrator.Orchestrator,
 		} else {
 			sfqNote += fmt.Sprintf("\n  Imported sessions: %d  Pending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
 		}
-		stream <- aiStreamEvent{
-			part: fmt.Sprintf("Quiz saved: %s\n  Quiz ID: %s\n  Title: %s\n  Questions: %d%s", path, quizID, q.Title, len(q.Sections), sfqNote),
-			done: true,
-		}
-	}()
-	return waitForAIStreamCmd(stream)
-}
-
-// runAdaptCmd generates an adaptive quiz for the given class based on
-// prior performance results, streaming agent tool-call events back to the TUI.
-func runAdaptCmd(class string, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
-	stream := make(chan aiStreamEvent, 32)
-	go func() {
-		defer close(stream)
-		q, path, err := quiz.AdaptStream(class, orc.Provider, cfg, func(e quiz.ProgressEvent) {
-			stream <- aiStreamEvent{
-				actionLabel: e.Label,
-				actionInfo:  e.Detail,
-				actionDone:  e.Done,
-				err:         e.Err,
-			}
-		})
-		if err != nil {
-			stream <- aiStreamEvent{err: err, done: true}
-			return
-		}
-		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
-		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
-		_, cacheErr := state.RegisterTrackedQuiz(class, path, sfqPath)
-		report, syncErr := tracking.SyncTrackedQuizSessions()
-		sfqErr := sfq.Track(sfqPath)
-		var sfqNote string
-		if cacheErr != nil {
-			sfqNote = fmt.Sprintf("\n  (could not register tracked quiz cache: %s)", cacheErr)
-		} else if sfqErr != nil {
-			sfqNote = fmt.Sprintf("\n  (could not start tracked quiz server: %s)", sfqErr)
-		} else {
-			sfqNote = "\n  Started tracked quiz session in browser..."
-		}
-		if syncErr != nil {
-			sfqNote += fmt.Sprintf("\n  Session sync warning: %s", syncErr)
-		} else {
-			sfqNote += fmt.Sprintf("\n  Imported sessions: %d  Pending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
-		}
-		stream <- aiStreamEvent{
-			part: fmt.Sprintf("Adaptive quiz saved: %s\n  Quiz ID: %s\n  Title: %s\n  Questions: %d%s", path, quizID, q.Title, len(q.Sections), sfqNote),
-			done: true,
-		}
+		stream <- aiStreamEvent{part: fmt.Sprintf("Quiz saved: %s\n  Quiz ID: %s\n  Title: %s\n  Questions: %d%s", path, quizID, q.Title, len(q.Sections), sfqNote), done: true}
 	}()
 	return waitForAIStreamCmd(stream)
 }

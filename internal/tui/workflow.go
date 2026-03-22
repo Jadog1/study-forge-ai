@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -11,6 +12,7 @@ import (
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/orchestrator"
+	"github.com/studyforge/study-agent/internal/quiz"
 	"github.com/studyforge/study-agent/internal/state"
 )
 
@@ -21,7 +23,6 @@ const (
 	WorkflowNone     WorkflowKind = iota
 	WorkflowIngest                // process notes from a folder
 	WorkflowGenerate              // generate a quiz for a class
-	WorkflowAdapt                 // adaptive quiz from performance history
 )
 
 // workflowStep tracks which stage of a workflow is running.
@@ -42,7 +43,9 @@ type WorkflowModel struct {
 
 	// Input fields shared or used per workflow kind.
 	pathInput  textinput.Model // folder path (ingest only)
-	classInput textinput.Model // class name (ingest/generate/adapt)
+	classInput textinput.Model // class name (ingest/generate)
+	countInput textinput.Model // quiz question count (generate)
+	typeInput  textinput.Model // preferred question type (generate)
 	fieldIdx   int             // focused field index within ingest (0=path, 1=class, 2=clean checkbox)
 
 	// Ingest-specific options.
@@ -77,12 +80,24 @@ func newWorkflow() WorkflowModel {
 	classInput.CharLimit = 120
 	classInput.Width = 40
 
-	return WorkflowModel{pathInput: pathInput, classInput: classInput}
+	countInput := textinput.New()
+	countInput.Placeholder = "10"
+	countInput.CharLimit = 4
+	countInput.Width = 16
+
+	typeInput := textinput.New()
+	typeInput.Placeholder = "multiple-choice"
+	typeInput.CharLimit = 40
+	typeInput.Width = 28
+
+	return WorkflowModel{pathInput: pathInput, classInput: classInput, countInput: countInput, typeInput: typeInput}
 }
 
 func (w WorkflowModel) resize(width int) WorkflowModel {
 	w.pathInput.Width = clamp(width-6, 18, width)
 	w.classInput.Width = clamp(width-6, 18, width)
+	w.countInput.Width = clamp(width-30, 10, 18)
+	w.typeInput.Width = clamp(width-18, 18, width)
 	return w
 }
 
@@ -103,6 +118,8 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.doneRows = 8
 	w.pathInput.SetValue("")
 	w.classInput.SetValue(defaultClass)
+	w.countInput.SetValue("10")
+	w.typeInput.SetValue("multiple-choice")
 	w.cleanBeforeIngest = false
 
 	switch kind {
@@ -112,10 +129,8 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 		w.classInput.Blur()
 	case WorkflowGenerate:
 		w.classInput.Placeholder = "class name (required)"
-		w.classInput.Focus()
-	case WorkflowAdapt:
-		w.classInput.Placeholder = "class name (required)"
-		w.classInput.Focus()
+		w.fieldIdx = 0
+		w.updateGenerateFieldFocus()
 	}
 	return w
 }
@@ -126,8 +141,6 @@ func (w WorkflowModel) title() string {
 		return "Ingest Notes"
 	case WorkflowGenerate:
 		return "Generate Quiz"
-	case WorkflowAdapt:
-		return "Adapt Content"
 	}
 	return "Workflow"
 }
@@ -158,31 +171,39 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			w.visible = false
 			return w, false, "Workflow cancelled", nil
 		case "tab":
-			// Ingest has three fields; cycle focus between them (tab/shift+tab).
 			if w.kind == WorkflowIngest {
 				w.fieldIdx = (w.fieldIdx + 1) % 3
-				w.updateIngestFieldFocus()
+				w.updateFieldFocus()
+			} else if w.kind == WorkflowGenerate {
+				w.fieldIdx = (w.fieldIdx + 1) % 3
+				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "shift+tab":
-			// Navigate backwards through fields
 			if w.kind == WorkflowIngest {
 				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
-				w.updateIngestFieldFocus()
+				w.updateFieldFocus()
+			} else if w.kind == WorkflowGenerate {
+				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
+				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "up":
-			// Navigate up between fields
 			if w.kind == WorkflowIngest {
 				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
-				w.updateIngestFieldFocus()
+				w.updateFieldFocus()
+			} else if w.kind == WorkflowGenerate {
+				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
+				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "down":
-			// Navigate down between fields
 			if w.kind == WorkflowIngest {
 				w.fieldIdx = (w.fieldIdx + 1) % 3
-				w.updateIngestFieldFocus()
+				w.updateFieldFocus()
+			} else if w.kind == WorkflowGenerate {
+				w.fieldIdx = (w.fieldIdx + 1) % 3
+				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "left", "right":
@@ -207,6 +228,17 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 	var cmd tea.Cmd
 	if w.kind == WorkflowIngest && w.fieldIdx == 0 {
 		w.pathInput, cmd = w.pathInput.Update(msg)
+	} else if w.kind == WorkflowGenerate {
+		switch w.fieldIdx {
+		case 0:
+			w.classInput, cmd = w.classInput.Update(msg)
+		case 1:
+			w.countInput, cmd = w.countInput.Update(msg)
+		case 2:
+			w.typeInput, cmd = w.typeInput.Update(msg)
+		default:
+			w.classInput, cmd = w.classInput.Update(msg)
+		}
 	} else {
 		w.classInput, cmd = w.classInput.Update(msg)
 	}
@@ -217,6 +249,8 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 func (w *WorkflowModel) updateIngestFieldFocus() {
 	w.pathInput.Blur()
 	w.classInput.Blur()
+	w.countInput.Blur()
+	w.typeInput.Blur()
 	switch w.fieldIdx {
 	case 0:
 		w.pathInput.Focus()
@@ -224,6 +258,30 @@ func (w *WorkflowModel) updateIngestFieldFocus() {
 		w.classInput.Focus()
 	case 2:
 		// Clean checkbox doesn't get focus, just highlight
+	}
+}
+
+func (w *WorkflowModel) updateGenerateFieldFocus() {
+	w.pathInput.Blur()
+	w.classInput.Blur()
+	w.countInput.Blur()
+	w.typeInput.Blur()
+	switch w.fieldIdx {
+	case 0:
+		w.classInput.Focus()
+	case 1:
+		w.countInput.Focus()
+	case 2:
+		w.typeInput.Focus()
+	}
+}
+
+func (w *WorkflowModel) updateFieldFocus() {
+	switch w.kind {
+	case WorkflowIngest:
+		w.updateIngestFieldFocus()
+	case WorkflowGenerate:
+		w.updateGenerateFieldFocus()
 	}
 }
 
@@ -239,15 +297,12 @@ func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config
 		if class == "" {
 			return w, false, "Class name is required", nil
 		}
-		w.step = stepRunning
-		return w, true, "Running " + w.title() + "…", runGenerateCmd(class, nil, orc, cfg)
-
-	case WorkflowAdapt:
-		if class == "" {
-			return w, false, "Class name is required", nil
+		opts := quiz.QuizOptions{
+			Count:          parseQuizCount(w.countInput.Value()),
+			TypePreference: strings.TrimSpace(w.typeInput.Value()),
 		}
 		w.step = stepRunning
-		return w, true, "Running " + w.title() + "…", runAdaptCmd(class, orc, cfg)
+		return w, true, "Running " + w.title() + "…", runQuizCmd(class, opts, orc, cfg)
 	}
 
 	return w, false, "", nil
@@ -291,11 +346,12 @@ func (w WorkflowModel) updateConfirm(msg tea.Msg, orc *orchestrator.Orchestrator
 			case WorkflowIngest:
 				return w.runIngestWorkflow(path, class, orc, cfg, false)
 			case WorkflowGenerate:
+				opts := quiz.QuizOptions{
+					Count:          parseQuizCount(w.countInput.Value()),
+					TypePreference: strings.TrimSpace(w.typeInput.Value()),
+				}
 				w.step = stepRunning
-				cmd = runGenerateCmd(class, nil, orc, cfg)
-			case WorkflowAdapt:
-				w.step = stepRunning
-				cmd = runAdaptCmd(class, orc, cfg)
+				cmd = runQuizCmd(class, opts, orc, cfg)
 			}
 			return w, true, "Running " + w.title() + "…", cmd
 
@@ -618,14 +674,17 @@ func (w WorkflowModel) viewInputStep() string {
 		}
 		b.WriteString(checkboxStyle.Render(checkMark + " Delete all previous ingestion data and start fresh\n\n"))
 		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to start  •  Esc to cancel"))
-	case WorkflowGenerate, WorkflowAdapt:
+	case WorkflowGenerate:
 		b.WriteString(labelStyle.Render("Class name:") + "\n")
 		if classes, _ := classpkg.List(); len(classes) > 0 {
 			b.WriteString(dimStyle.Render("Available: "+truncate(strings.Join(classes, ", "), 120)) + "\n")
 		}
 		b.WriteString(w.classInput.View() + "\n\n")
-		verb := map[WorkflowKind]string{WorkflowGenerate: "generate", WorkflowAdapt: "adapt"}[w.kind]
-		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter to %s  •  Esc to cancel", verb)))
+		b.WriteString(labelStyle.Render("Question count:") + "\n")
+		b.WriteString(w.countInput.View() + "\n\n")
+		b.WriteString(labelStyle.Render("Preferred type:") + "\n")
+		b.WriteString(w.typeInput.View() + "\n\n")
+		b.WriteString(dimStyle.Render("Tab/Shift+Tab navigate  •  Enter to generate  •  Esc to cancel"))
 	}
 	return b.String()
 }
@@ -714,4 +773,19 @@ func splitLongWord(word string, width int) []string {
 		return []string{word}
 	}
 	return lines
+}
+
+func parseQuizCount(v string) int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 10
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 10
+	}
+	if n > 100 {
+		return 100
+	}
+	return n
 }

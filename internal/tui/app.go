@@ -283,8 +283,6 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		m.workflow = m.workflow.Open(WorkflowIngest, class)
 	case "generate":
 		m.workflow = m.workflow.Open(WorkflowGenerate, class)
-	case "adapt":
-		m.workflow = m.workflow.Open(WorkflowAdapt, class)
 	case "new-class":
 		m.activeTab = tabClasses
 		m.classes = m.classes.EnterNewClassMode()

@@ -179,6 +179,7 @@ func buildNoteContext(className, prompt string) (string, error) {
 
 const availableTools = `Available tools:
 - search_notes: search ingested notes by natural-language query. Arguments: query (string), optional class (string), optional limit (int).
+- search_knowledge: search AI-processed knowledge sections and components by natural-language query. Returns richer extracted knowledge than search_notes. Arguments: query (string), optional class (string), optional kind ("section" or "component", leave empty for both), optional limit (int).
 - get_class_context: fetch the registered class context files for a class. Arguments: optional class (string).
 - sfq_search: run the configured SFQ search command for external related notes. Arguments: query (string).
 - sfq_schema: fetch the quiz YAML schema for strict formatting guidance when generating quizzes. No arguments.
@@ -482,6 +483,24 @@ func describeToolCall(className string, call *toolCall) string {
 			return fmt.Sprintf("Searching notes for %q in %s", query, targetClass)
 		}
 		return fmt.Sprintf("Searching notes for %q", query)
+	case "search_knowledge":
+		query := toolString(call.Arguments, "query")
+		targetClass := toolString(call.Arguments, "class")
+		if targetClass == "" {
+			targetClass = className
+		}
+		kind := toolString(call.Arguments, "kind")
+		var suffix string
+		switch kind {
+		case "section":
+			suffix = " (sections)"
+		case "component":
+			suffix = " (components)"
+		}
+		if targetClass != "" {
+			return fmt.Sprintf("Searching knowledge%s for %q in %s", suffix, query, targetClass)
+		}
+		return fmt.Sprintf("Searching knowledge%s for %q", suffix, query)
 	case "get_class_context":
 		targetClass := toolString(call.Arguments, "class")
 		if targetClass == "" {
@@ -588,6 +607,19 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			return "", err
 		}
 		return formatToolSearchResults(query, targetClass, results), nil
+	case "search_knowledge":
+		query := toolString(call.Arguments, "query")
+		targetClass := toolString(call.Arguments, "class")
+		if targetClass == "" {
+			targetClass = className
+		}
+		kind := toolString(call.Arguments, "kind")
+		limit := toolInt(call.Arguments, "limit", 8)
+		results, err := search.ByKnowledgeQuery(query, targetClass, limit)
+		if err != nil {
+			return "", err
+		}
+		return formatKnowledgeResults(query, targetClass, kind, results), nil
 	case "get_class_context":
 		targetClass := toolString(call.Arguments, "class")
 		if targetClass == "" {
@@ -630,8 +662,14 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if targetClass == "" {
 			return "", fmt.Errorf("class is required when no class is selected")
 		}
+		count := toolInt(call.Arguments, "count", 10)
+		typePref := toolString(call.Arguments, "type")
+		if typePref == "" {
+			typePref = "multiple-choice"
+		}
 		tags := toolStringSlice(call.Arguments, "tags")
-		q, path, err := quiz.Generate(targetClass, tags, provider, cfg)
+		opts := quiz.QuizOptions{Count: count, TypePreference: typePref, Tags: tags}
+		q, path, err := quiz.NewQuiz(targetClass, opts, provider, cfg)
 		if err != nil {
 			return "", err
 		}
@@ -660,7 +698,13 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if targetClass == "" {
 			return "", fmt.Errorf("class is required when no class is selected")
 		}
-		q, path, err := quiz.Adapt(targetClass, provider, cfg)
+		count := toolInt(call.Arguments, "count", 10)
+		typePref := toolString(call.Arguments, "type")
+		if typePref == "" {
+			typePref = "multiple-choice"
+		}
+		opts := quiz.QuizOptions{Count: count, TypePreference: typePref}
+		q, path, err := quiz.NewQuiz(targetClass, opts, provider, cfg)
 		if err != nil {
 			return "", err
 		}
@@ -695,6 +739,59 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
+}
+
+func formatKnowledgeResults(query, className, kind string, results []search.KnowledgeResult) string {
+	// Apply optional kind filter.
+	if kind == "section" || kind == "component" {
+		filtered := results[:0]
+		for _, r := range results {
+			if r.Kind == kind {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
+	}
+
+	if len(results) == 0 {
+		if className != "" {
+			return fmt.Sprintf("No knowledge sections or components matched query %q for class %q.", query, className)
+		}
+		return fmt.Sprintf("No knowledge sections or components matched query %q.", query)
+	}
+
+	var b strings.Builder
+	if className != "" {
+		fmt.Fprintf(&b, "Knowledge results for query %q in class %q:\n\n", query, className)
+	} else {
+		fmt.Fprintf(&b, "Knowledge results for query %q:\n\n", query)
+	}
+	for i, result := range results {
+		if result.Kind == "section" {
+			s := result.Section
+			fmt.Fprintf(&b, "%d. [section] id=%s class=%s score=%d\n", i+1, s.ID, s.Class, result.Score)
+			fmt.Fprintf(&b, "   title: %s\n", s.Title)
+			if len(s.Tags) > 0 {
+				fmt.Fprintf(&b, "   tags: %s\n", strings.Join(s.Tags, ", "))
+			}
+			if len(s.Concepts) > 0 {
+				fmt.Fprintf(&b, "   concepts: %s\n", strings.Join(s.Concepts, ", "))
+			}
+			fmt.Fprintf(&b, "   summary: %s\n\n", s.Summary)
+		} else {
+			c := result.Component
+			fmt.Fprintf(&b, "%d. [component] id=%s class=%s score=%d\n", i+1, c.ID, c.Class, result.Score)
+			fmt.Fprintf(&b, "   kind: %s\n", c.Kind)
+			if len(c.Tags) > 0 {
+				fmt.Fprintf(&b, "   tags: %s\n", strings.Join(c.Tags, ", "))
+			}
+			if len(c.Concepts) > 0 {
+				fmt.Fprintf(&b, "   concepts: %s\n", strings.Join(c.Concepts, ", "))
+			}
+			fmt.Fprintf(&b, "   content: %s\n\n", c.Content)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func formatToolSearchResults(query, className string, results []search.Result) string {

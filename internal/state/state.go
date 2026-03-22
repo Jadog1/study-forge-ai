@@ -29,18 +29,26 @@ type Note struct {
 
 // ── Quiz ─────────────────────────────────────────────────────────────────────
 
+// QuizChoice is one option in a structured question (multiple-choice,
+// multi-select, true-false, multi-true-false, or ordering).
+type QuizChoice struct {
+	Text    string `yaml:"text"    json:"text"`
+	Correct bool   `yaml:"correct" json:"correct"`
+}
+
 // QuizSection is a single question inside a quiz YAML document.
 // This is also the format consumed by studyforge.
 type QuizSection struct {
-	Type        string   `yaml:"type"                       json:"type"`
-	ID          string   `yaml:"id"                         json:"id"`
-	Question    string   `yaml:"question"                   json:"question"`
-	Hint        string   `yaml:"hint"                       json:"hint"`
-	Answer      string   `yaml:"answer"                     json:"answer"`
-	Reasoning   string   `yaml:"reasoning"                  json:"reasoning"`
-	SectionID   string   `yaml:"section_id,omitempty"   json:"section_id,omitempty"`
-	ComponentID string   `yaml:"component_id,omitempty" json:"component_id,omitempty"`
-	Tags        []string `yaml:"tags"                       json:"tags"`
+	Type        string       `yaml:"type"                   json:"type"`
+	ID          string       `yaml:"id"                     json:"id"`
+	Question    string       `yaml:"question"               json:"question"`
+	Hint        string       `yaml:"hint"                   json:"hint"`
+	Answer      string       `yaml:"answer,omitempty"       json:"answer,omitempty"`
+	Reasoning   string       `yaml:"reasoning"              json:"reasoning"`
+	SectionID   string       `yaml:"section_id,omitempty"   json:"section_id,omitempty"`
+	ComponentID string       `yaml:"component_id,omitempty" json:"component_id,omitempty"`
+	Tags        []string     `yaml:"tags"                   json:"tags"`
+	Choices     []QuizChoice `yaml:"choices,omitempty"      json:"choices,omitempty"`
 }
 
 // Quiz is a complete quiz document ready to be written to disk and handed
