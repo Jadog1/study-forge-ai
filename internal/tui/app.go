@@ -234,7 +234,7 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tabKnowledge:
 		var cmd tea.Cmd
-		m.knowledge, cmd = m.knowledge.update(msg, m.classes.SelectedClass())
+		m.knowledge, cmd = m.knowledge.update(msg)
 		if cmd != nil {
 			m.status = "Loading knowledge..."
 		}
@@ -283,6 +283,8 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		m.workflow = m.workflow.Open(WorkflowIngest, class)
 	case "generate":
 		m.workflow = m.workflow.Open(WorkflowGenerate, class)
+	case "export-knowledge":
+		m.workflow = m.workflow.Open(WorkflowExport, class)
 	case "new-class":
 		m.activeTab = tabClasses
 		m.classes = m.classes.EnterNewClassMode()

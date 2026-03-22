@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -23,6 +25,7 @@ const (
 	WorkflowNone     WorkflowKind = iota
 	WorkflowIngest                // process notes from a folder
 	WorkflowGenerate              // generate a quiz for a class
+	WorkflowExport                // export section/component dataset as JSON
 )
 
 // workflowStep tracks which stage of a workflow is running.
@@ -46,10 +49,13 @@ type WorkflowModel struct {
 	classInput textinput.Model // class name (ingest/generate)
 	countInput textinput.Model // quiz question count (generate)
 	typeInput  textinput.Model // preferred question type (generate)
-	fieldIdx   int             // focused field index within ingest (0=path, 1=class, 2=clean checkbox)
+	fieldIdx   int             // focused field index for current workflow kind
 
 	// Ingest-specific options.
 	cleanBeforeIngest bool // if true, delete all previous ingestion data before starting
+
+	// Export-specific options.
+	includeEmbeddings bool // if true, include embeddings in exported JSON
 
 	// Live agent-step display populated during stepRunning for streaming workflows.
 	actionLines   []string // one entry per tool action invoked so far
@@ -120,7 +126,10 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.classInput.SetValue(defaultClass)
 	w.countInput.SetValue("10")
 	w.typeInput.SetValue("multiple-choice")
+	w.pathInput.Placeholder = "folder path  (e.g. ./notes)"
+	w.classInput.Placeholder = "class name"
 	w.cleanBeforeIngest = false
+	w.includeEmbeddings = false
 
 	switch kind {
 	case WorkflowIngest:
@@ -131,6 +140,12 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 		w.classInput.Placeholder = "class name (required)"
 		w.fieldIdx = 0
 		w.updateGenerateFieldFocus()
+	case WorkflowExport:
+		w.classInput.Placeholder = "class (optional)"
+		w.pathInput.Placeholder = "output file (e.g. ./knowledge-export.json)"
+		w.pathInput.SetValue(filepath.Join(".", fmt.Sprintf("knowledge-export-%s.json", time.Now().UTC().Format("20060102-150405"))))
+		w.fieldIdx = 0
+		w.updateExportFieldFocus()
 	}
 	return w
 }
@@ -141,6 +156,8 @@ func (w WorkflowModel) title() string {
 		return "Ingest Notes"
 	case WorkflowGenerate:
 		return "Generate Quiz"
+	case WorkflowExport:
+		return "Export Knowledge"
 	}
 	return "Workflow"
 }
@@ -171,38 +188,30 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			w.visible = false
 			return w, false, "Workflow cancelled", nil
 		case "tab":
-			if w.kind == WorkflowIngest {
-				w.fieldIdx = (w.fieldIdx + 1) % 3
-				w.updateFieldFocus()
-			} else if w.kind == WorkflowGenerate {
-				w.fieldIdx = (w.fieldIdx + 1) % 3
+			count := w.fieldCount()
+			if count > 0 {
+				w.fieldIdx = (w.fieldIdx + 1) % count
 				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "shift+tab":
-			if w.kind == WorkflowIngest {
-				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
-				w.updateFieldFocus()
-			} else if w.kind == WorkflowGenerate {
-				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
+			count := w.fieldCount()
+			if count > 0 {
+				w.fieldIdx = (w.fieldIdx - 1 + count) % count
 				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "up":
-			if w.kind == WorkflowIngest {
-				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
-				w.updateFieldFocus()
-			} else if w.kind == WorkflowGenerate {
-				w.fieldIdx = (w.fieldIdx - 1 + 3) % 3
+			count := w.fieldCount()
+			if count > 0 {
+				w.fieldIdx = (w.fieldIdx - 1 + count) % count
 				w.updateFieldFocus()
 			}
 			return w, false, "", nil
 		case "down":
-			if w.kind == WorkflowIngest {
-				w.fieldIdx = (w.fieldIdx + 1) % 3
-				w.updateFieldFocus()
-			} else if w.kind == WorkflowGenerate {
-				w.fieldIdx = (w.fieldIdx + 1) % 3
+			count := w.fieldCount()
+			if count > 0 {
+				w.fieldIdx = (w.fieldIdx + 1) % count
 				w.updateFieldFocus()
 			}
 			return w, false, "", nil
@@ -211,11 +220,18 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			if w.kind == WorkflowIngest && w.fieldIdx == 2 {
 				w.cleanBeforeIngest = !w.cleanBeforeIngest
 			}
+			if w.kind == WorkflowExport && w.fieldIdx == 2 {
+				w.includeEmbeddings = !w.includeEmbeddings
+			}
 			return w, false, "", nil
 		case "space":
 			// Toggle checkbox on space when on clean field
 			if w.kind == WorkflowIngest && w.fieldIdx == 2 {
 				w.cleanBeforeIngest = !w.cleanBeforeIngest
+				return w, false, "", nil
+			}
+			if w.kind == WorkflowExport && w.fieldIdx == 2 {
+				w.includeEmbeddings = !w.includeEmbeddings
 				return w, false, "", nil
 			}
 			// Otherwise, pass through to current field
@@ -226,7 +242,7 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 
 	// Route input to the focused field.
 	var cmd tea.Cmd
-	if w.kind == WorkflowIngest && w.fieldIdx == 0 {
+	if (w.kind == WorkflowIngest || w.kind == WorkflowExport) && w.fieldIdx == 0 {
 		w.pathInput, cmd = w.pathInput.Update(msg)
 	} else if w.kind == WorkflowGenerate {
 		switch w.fieldIdx {
@@ -239,6 +255,8 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 		default:
 			w.classInput, cmd = w.classInput.Update(msg)
 		}
+	} else if w.kind == WorkflowExport {
+		w.classInput, cmd = w.classInput.Update(msg)
 	} else {
 		w.classInput, cmd = w.classInput.Update(msg)
 	}
@@ -276,12 +294,38 @@ func (w *WorkflowModel) updateGenerateFieldFocus() {
 	}
 }
 
+func (w *WorkflowModel) updateExportFieldFocus() {
+	w.pathInput.Blur()
+	w.classInput.Blur()
+	w.countInput.Blur()
+	w.typeInput.Blur()
+	switch w.fieldIdx {
+	case 0:
+		w.pathInput.Focus()
+	case 1:
+		w.classInput.Focus()
+	case 2:
+		// Checkbox row uses highlighted styling only.
+	}
+}
+
+func (w WorkflowModel) fieldCount() int {
+	switch w.kind {
+	case WorkflowIngest, WorkflowGenerate, WorkflowExport:
+		return 3
+	default:
+		return 0
+	}
+}
+
 func (w *WorkflowModel) updateFieldFocus() {
 	switch w.kind {
 	case WorkflowIngest:
 		w.updateIngestFieldFocus()
 	case WorkflowGenerate:
 		w.updateGenerateFieldFocus()
+	case WorkflowExport:
+		w.updateExportFieldFocus()
 	}
 }
 
@@ -303,6 +347,14 @@ func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config
 		}
 		w.step = stepRunning
 		return w, true, "Running " + w.title() + "…", runQuizCmd(class, opts, orc, cfg)
+
+	case WorkflowExport:
+		path := strings.TrimSpace(w.pathInput.Value())
+		if path == "" {
+			return w, false, "Output file path is required", nil
+		}
+		w.step = stepRunning
+		return w, true, "Running " + w.title() + "…", runExportKnowledgeCmd(path, class, w.includeEmbeddings)
 	}
 
 	return w, false, "", nil
@@ -685,6 +737,22 @@ func (w WorkflowModel) viewInputStep() string {
 		b.WriteString(labelStyle.Render("Preferred type:") + "\n")
 		b.WriteString(w.typeInput.View() + "\n\n")
 		b.WriteString(dimStyle.Render("Tab/Shift+Tab navigate  •  Enter to generate  •  Esc to cancel"))
+	case WorkflowExport:
+		b.WriteString(labelStyle.Render("Output file:") + "\n")
+		b.WriteString(w.pathInput.View() + "\n\n")
+		b.WriteString(labelStyle.Render("Class filter (optional):") + "\n")
+		b.WriteString(w.classInput.View() + "\n\n")
+		b.WriteString(labelStyle.Render("Include embeddings:") + "\n")
+		checkboxStyle := dimStyle
+		if w.fieldIdx == 2 {
+			checkboxStyle = warnStyle
+		}
+		checkMark := "[ ]"
+		if w.includeEmbeddings {
+			checkMark = "[✓]"
+		}
+		b.WriteString(checkboxStyle.Render(checkMark + " Include section/component embedding vectors\n\n"))
+		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to export  •  Esc to cancel"))
 	}
 	return b.String()
 }

@@ -205,3 +205,29 @@ func syncTrackedSessionsCmd() tea.Cmd {
 		return trackedSyncDoneMsg{report: report, err: err}
 	}
 }
+
+// runExportKnowledgeCmd writes a shareable knowledge dataset JSON export.
+func runExportKnowledgeCmd(outputPath, class string, includeEmbeddings bool) tea.Cmd {
+	return func() tea.Msg {
+		result, err := state.ExportKnowledgeDataset(outputPath, state.KnowledgeExportOptions{
+			Class:             class,
+			IncludeEmbeddings: includeEmbeddings,
+		})
+		if err != nil {
+			return workflowDoneMsg{err: err}
+		}
+
+		summary := fmt.Sprintf("Exported knowledge dataset\nPath: %s\nSections: %d\nComponents: %d\nEmbeddings: %s", result.OutputPath, result.Sections, result.Components, ternaryText(result.IncludeEmbeddings, "included", "excluded"))
+		if strings.TrimSpace(result.Class) != "" {
+			summary += "\nClass filter: " + result.Class
+		}
+		return workflowDoneMsg{summary: summary}
+	}
+}
+
+func ternaryText(condition bool, yes, no string) string {
+	if condition {
+		return yes
+	}
+	return no
+}

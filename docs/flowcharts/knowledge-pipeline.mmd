@@ -1,0 +1,16 @@
+flowchart LR
+    A[Ingest folder] --> B[Discover files]
+    B --> C{Any files?}
+    C -- No --> Z[Stop]
+    C -- Yes --> D[Summarize file into note]
+    D --> E[Compose sections + components]
+    E --> F[Embed section and components]
+    F --> G{Similar section found?}
+    G -- Yes --> H[LLM review decide merge or keep]
+    G -- No --> I[Create new section]
+    H --> J[Upsert section + components]
+    I --> J
+    J --> K[Save indexes]
+    K --> L[Done]
+
+    U[(Usage tracking)] -. summarize compose review embed .-> D

@@ -4,6 +4,9 @@ An AI-powered study assistant written in Go with a baked-in Bubble Tea workflow.
 It ingests notes, extracts structured knowledge, generates quizzes, tracks
 performance, streams chat responses in-app, and integrates sfq search.
 
+![Knowledge Pipeline](./docs/flowcharts/Knowledge-Pipeline.png)
+![Quiz Pipeline](./docs/flowcharts/Quiz-Pipeline.png)
+
 ---
 
 ## Requirements
@@ -70,19 +73,22 @@ sfa class create linear-algebra
 # 3. Ingest notes
 sfa ingest ./notes/math --class linear-algebra
 
-# 4. Generate a quiz
+# 4. Export knowledge for sharing (optional)
+sfa export ./linear-algebra-knowledge.json --class linear-algebra
+
+# 5. Generate a quiz
 sfa generate linear-algebra
 
-# 5. Study the quiz
+# 6. Study the quiz
 sfa study ~/.study-forge-ai/quizzes/linear-algebra/quiz-<id>.yaml
 
-# 6. Render to HTML via studyforge
+# 7. Render to HTML via studyforge
 studyforge build ~/.study-forge-ai/quizzes/linear-algebra/quiz-<id>.yaml
 
-# 7. Record your results
+# 8. Record your results
 sfa complete ~/.study-forge-ai/quizzes/linear-algebra/quiz-<id>.yaml
 
-# 8. Generate adaptive follow-up quiz
+# 9. Generate adaptive follow-up quiz
 sfa adapt linear-algebra
 ```
 
@@ -94,6 +100,7 @@ sfa adapt linear-algebra
 | --- | --- |
 | `sfa init` | Initialise `~/.study-forge-ai/` app data |
 | `sfa ingest <path> [--class <name>]` | Ingest and process notes from a folder |
+| `sfa export [output-path] [--class <name>] [--include-embeddings]` | Export sections/components as shareable JSON |
 | `sfa generate <class> [--tags ...]` | Generate a quiz from ingested notes |
 | `sfa study <quiz-path>` | Print quiz questions to the terminal |
 | `sfa complete <quiz-path>` | Record quiz results interactively |

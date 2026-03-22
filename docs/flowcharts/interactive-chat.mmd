@@ -1,0 +1,14 @@
+flowchart LR
+    A[User sends prompt] --> B[Add user message and assistant slot]
+    B --> C{Auto SFQ on?}
+    C -- Yes --> D[Run background SFQ lookup]
+    C -- No --> E[Skip lookup]
+    D --> F[Send prompt to AI]
+    E --> F
+    F --> G[Stream response into chat]
+    F --> H{Tool action emitted?}
+    H -- Yes --> I[Show action start and done or failed]
+    H -- No --> J[Continue normal response]
+    I --> K[Render updated chat timeline]
+    J --> K
+    K --> L[Ready for next prompt]

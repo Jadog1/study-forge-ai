@@ -27,6 +27,7 @@ type PaletteModel struct {
 var paletteActions = []PaletteAction{
 	{"Ingest Notes", "Process a folder of notes with AI", "ingest"},
 	{"Generate Quiz", "Create a quiz from ingested notes", "generate"},
+	{"Export Knowledge Dataset", "Save sections/components as shareable JSON", "export-knowledge"},
 	{"New Class", "Create a new study class", "new-class"},
 	{"Add Context File", "Attach a context file to the active class", "add-context"},
 	{"Search Notes (SFQ)", "Open SFQ Search tab", "sfq-search"},

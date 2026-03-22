@@ -19,9 +19,8 @@ const (
 )
 
 const knowledgeSectionRowHeight = 2
-const knowledgeMetaHeight = 2
-const knowledgeCompactMinWidth = 88
-const knowledgeCompactMinHeight = 18
+const knowledgeSplitMinRightWidth = 24
+const knowledgeSplitMinTotalWidth = 60
 
 type knowledgeQuizMetrics struct {
 	Attempts     int
@@ -153,19 +152,12 @@ func (k KnowledgeTab) receive(sectionIndex *state.SectionIndex, componentIndex *
 	return k
 }
 
-func (k KnowledgeTab) update(msg tea.Msg, selectedClass string) (KnowledgeTab, tea.Cmd) {
-	k = k.prepare(selectedClass)
+func (k KnowledgeTab) update(msg tea.Msg) (KnowledgeTab, tea.Cmd) {
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
 		case "r":
 			k = k.startLoading()
 			return k, loadKnowledgeCmd()
-		case "enter":
-			if k.activePane == knowledgePaneSections {
-				k.activePane = knowledgePaneComponents
-				k.componentScroll = 0
-			}
-			return k, nil
 		case "h":
 			k.activePane = knowledgePaneSections
 			return k, nil
@@ -173,64 +165,59 @@ func (k KnowledgeTab) update(msg tea.Msg, selectedClass string) (KnowledgeTab, t
 			k.activePane = knowledgePaneComponents
 			return k, nil
 		case "up", "k":
-			return k.nudgeActivePane(-1, selectedClass), nil
+			return k.nudgeActivePane(-1), nil
 		case "down", "j":
-			return k.nudgeActivePane(1, selectedClass), nil
+			return k.nudgeActivePane(1), nil
 		case "pgup":
-			return k.pageActivePane(-1, selectedClass), nil
+			return k.pageActivePane(-1), nil
 		case "pgdn":
-			return k.pageActivePane(1, selectedClass), nil
+			return k.pageActivePane(1), nil
 		case "home":
-			return k.moveActivePaneHome(selectedClass), nil
+			return k.moveActivePaneHome(), nil
 		case "end":
-			return k.moveActivePaneEnd(selectedClass), nil
+			return k.moveActivePaneEnd(), nil
 		}
 	}
 	return k, nil
 }
 
-func (k KnowledgeTab) nudgeActivePane(delta int, selectedClass string) KnowledgeTab {
+func (k KnowledgeTab) nudgeActivePane(delta int) KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
-		k.componentScroll = clamp(k.componentScroll+delta, 0, k.componentMaxScroll(selectedClass))
+		k.componentScroll = clamp(k.componentScroll+delta, 0, k.componentMaxScroll())
 		return k
 	}
-	entries := k.filteredEntries(selectedClass)
-	if len(entries) == 0 {
+	if len(k.entries) == 0 {
 		return k
 	}
 	previous := k.selectedSection
-	k.selectedSection = clamp(k.selectedSection+delta, 0, len(entries)-1)
+	k.selectedSection = clamp(k.selectedSection+delta, 0, len(k.entries)-1)
 	if previous != k.selectedSection {
 		k.componentScroll = 0
 	}
 	return k
 }
 
-func (k KnowledgeTab) pageActivePane(direction int, selectedClass string) KnowledgeTab {
+func (k KnowledgeTab) pageActivePane(direction int) KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
 		page := max(3, k.componentViewportHeight()-2)
-		k.componentScroll = clamp(k.componentScroll+(direction*page), 0, k.componentMaxScroll(selectedClass))
+		k.componentScroll = clamp(k.componentScroll+(direction*page), 0, k.componentMaxScroll())
 		return k
 	}
-	entries := k.filteredEntries(selectedClass)
-	if len(entries) == 0 {
+	if len(k.entries) == 0 {
 		return k
 	}
 	page := max(1, k.sectionPageSize())
 	previous := k.selectedSection
-	k.selectedSection = clamp(k.selectedSection+(direction*page), 0, len(entries)-1)
+	k.selectedSection = clamp(k.selectedSection+(direction*page), 0, len(k.entries)-1)
 	if previous != k.selectedSection {
 		k.componentScroll = 0
 	}
 	return k
 }
 
-func (k KnowledgeTab) moveActivePaneHome(selectedClass string) KnowledgeTab {
+func (k KnowledgeTab) moveActivePaneHome() KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
 		k.componentScroll = 0
-		return k
-	}
-	if len(k.filteredEntries(selectedClass)) == 0 {
 		return k
 	}
 	if k.selectedSection != 0 {
@@ -240,21 +227,19 @@ func (k KnowledgeTab) moveActivePaneHome(selectedClass string) KnowledgeTab {
 	return k
 }
 
-func (k KnowledgeTab) moveActivePaneEnd(selectedClass string) KnowledgeTab {
+func (k KnowledgeTab) moveActivePaneEnd() KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
-		k.componentScroll = k.componentMaxScroll(selectedClass)
+		k.componentScroll = k.componentMaxScroll()
 		return k
 	}
-	entries := k.filteredEntries(selectedClass)
-	if len(entries) > 0 && k.selectedSection != len(entries)-1 {
-		k.selectedSection = len(entries) - 1
+	if len(k.entries) > 0 && k.selectedSection != len(k.entries)-1 {
+		k.selectedSection = len(k.entries) - 1
 		k.componentScroll = 0
 	}
 	return k
 }
 
 func (k KnowledgeTab) view(width, height int, selectedClass string) string {
-	k = k.prepare(selectedClass)
 	if k.loading && !k.loaded {
 		return dimStyle.Render("Loading learned sections…")
 	}
@@ -264,72 +249,56 @@ func (k KnowledgeTab) view(width, height int, selectedClass string) string {
 	if k.err != nil {
 		return errorStyle.Render("Error loading learned sections: " + k.err.Error())
 	}
-
-	entries := k.filteredEntries(selectedClass)
-	sectionCount, componentCount := knowledgeCounts(entries)
-	if len(entries) == 0 {
-		if strings.TrimSpace(selectedClass) != "" {
-			return lipgloss.JoinVertical(lipgloss.Left,
-				dimStyle.Render("No learned sections for the selected class yet."),
-				dimStyle.Render("Run ingest for that class, then refresh with r."),
-			)
-		}
+	if len(k.entries) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			dimStyle.Render("No learned sections yet."),
 			dimStyle.Render("Run ingest to build the knowledge index, then refresh with r."),
 		)
 	}
 
-	metaLine1 := truncateWidth(fmt.Sprintf("%s %d  •  %s %d", labelStyle.Render("Sections:"), sectionCount, labelStyle.Render("Components:"), componentCount), width)
-	metaLine2 := truncateWidth(k.metaHint(width), width)
+	classLabel := "all classes"
+	if strings.TrimSpace(selectedClass) != "" {
+		classLabel = selectedClass
+	}
+	const metaHeight = 2
+	metaLine1 := truncateWidth(fmt.Sprintf("%s %d  %s %d  %s %s", labelStyle.Render("Sections:"), len(k.entries), labelStyle.Render("Components:"), k.totalComponentsCount, labelStyle.Render("Selected class:"), classLabel), width)
+	metaLine2 := truncateWidth(fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), k.activePane.label(), dimStyle.Render("h/l switch pane  •  up/down scroll  •  r refresh")), width)
 	meta := metaLine1 + "\n" + metaLine2
+	layout := knowledgeLayoutFor(width, height, metaHeight)
+	leftPane := k.renderSectionsPane(layout.leftWidth, layout.leftHeight)
+	rightPane := k.renderComponentsPane(layout.rightWidth, layout.rightHeight)
 
-	layout := knowledgeLayoutFor(width, height, knowledgeMetaHeight)
-	if layout.compact {
-		if k.activePane == knowledgePaneComponents {
-			return meta + "\n" + k.renderComponentsPane(entries, width, layout.paneHeight, true)
-		}
-		return meta + "\n" + k.renderSectionsPane(entries, width, layout.paneHeight, true)
+	if layout.stacked {
+		return meta + "\n" + lipgloss.JoinVertical(lipgloss.Left, leftPane, rightPane)
 	}
-
-	leftPane := k.renderSectionsPane(entries, layout.leftWidth, layout.paneHeight, false)
-	rightPane := k.renderComponentsPane(entries, layout.rightWidth, layout.paneHeight, false)
-	return meta + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, dimStyle.Render(" │ "), rightPane)
+	return meta + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane)
 }
 
-func (k KnowledgeTab) metaHint(width int) string {
-	if width < knowledgeCompactMinWidth {
-		if k.activePane == knowledgePaneComponents {
-			return fmt.Sprintf("%s %s  •  %s", labelStyle.Render("View:"), k.activePane.label(), dimStyle.Render("j/k scroll  •  h back  •  r refresh"))
-		}
-		return fmt.Sprintf("%s %s  •  %s", labelStyle.Render("View:"), k.activePane.label(), dimStyle.Render("j/k move  •  enter/l open  •  r refresh"))
-	}
-	return fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), k.activePane.label(), dimStyle.Render("h/l switch  •  j/k scroll  •  r refresh"))
-}
-
-func (k KnowledgeTab) renderSectionsPane(entries []knowledgeSectionEntry, width, height int, compact bool) string {
-	innerWidth := max(12, width)
-	innerHeight := max(1, height-2)
+func (k KnowledgeTab) renderSectionsPane(width, height int) string {
+	style := knowledgePaneBorderStyle(k.activePane == knowledgePaneSections).Width(width)
+	innerWidth := max(12, width-style.GetHorizontalFrameSize())
+	contentHeight := max(2, height-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-1)
 
 	contentLines := []string{}
 	pageSize := max(1, innerHeight/knowledgeSectionRowHeight)
 	start := 0
 	if k.selectedSection >= pageSize {
 		start = k.selectedSection - pageSize + 1
-		if k.selectedSection < len(entries)-1 {
+		if k.selectedSection < len(k.entries)-1 {
 			centered := k.selectedSection - (pageSize / 2)
 			if centered > 0 {
 				start = centered
 			}
 		}
 	}
-	maxStart := max(0, len(entries)-pageSize)
+	maxStart := max(0, len(k.entries)-pageSize)
 	start = clamp(start, 0, maxStart)
-	end := min(len(entries), start+pageSize)
+	end := min(len(k.entries), start+pageSize)
 
 	for i := start; i < end; i++ {
 		selected := i == k.selectedSection
-		contentLines = append(contentLines, strings.Split(k.renderSectionRow(entries[i], innerWidth, selected), "\n")...)
+		contentLines = append(contentLines, strings.Split(k.renderSectionRow(k.entries[i], innerWidth, selected), "\n")...)
 	}
 	for len(contentLines) < innerHeight {
 		contentLines = append(contentLines, "")
@@ -338,13 +307,15 @@ func (k KnowledgeTab) renderSectionsPane(entries []knowledgeSectionEntry, width,
 		contentLines = contentLines[:innerHeight]
 	}
 
-	title := sectionTitleStyle.Render("Sections")
-	if compact {
-		title = sectionTitleStyle.Render("Sections") + dimStyle.Render("  choose a section")
-	}
-	divider := dimStyle.Render(strings.Repeat("─", max(8, innerWidth)))
 	body := strings.Join(contentLines, "\n")
-	return lipgloss.NewStyle().Width(innerWidth).MaxWidth(innerWidth).Height(height).MaxHeight(height).Render(title + "\n" + divider + "\n" + body)
+	title := sectionTitleStyle.Render("Sections")
+	content := lipgloss.NewStyle().
+		Width(innerWidth).
+		MaxWidth(innerWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(title + "\n" + body)
+	return style.Render(content)
 }
 
 func (k KnowledgeTab) renderSectionRow(entry knowledgeSectionEntry, width int, selected bool) string {
@@ -356,11 +327,7 @@ func (k KnowledgeTab) renderSectionRow(entry knowledgeSectionEntry, width int, s
 	if selected {
 		marker = ">"
 	}
-	preview := strings.TrimSpace(strings.ReplaceAll(entry.Section.Summary, "\n", " "))
-	if preview == "" {
-		preview = "No summary"
-	}
-	details := fmt.Sprintf("%d comp  •  %s  •  %s", len(entry.Components), knowledgeSummaryMetrics(entry.Metrics), preview)
+	details := emptyFallback(entry.Section.Class, "unclassified") + "  •  " + fmt.Sprintf("%d comp", len(entry.Components)) + "  •  " + knowledgeCompactMetrics(entry.Metrics)
 
 	rowText := strings.Join([]string{
 		truncateWidth(marker+" "+title, width),
@@ -371,11 +338,13 @@ func (k KnowledgeTab) renderSectionRow(entry knowledgeSectionEntry, width int, s
 	return style.Render(rowText)
 }
 
-func (k KnowledgeTab) renderComponentsPane(entries []knowledgeSectionEntry, width, height int, compact bool) string {
-	innerWidth := max(14, width)
-	innerHeight := max(1, height-2)
+func (k KnowledgeTab) renderComponentsPane(width, height int) string {
+	style := knowledgePaneBorderStyle(k.activePane == knowledgePaneComponents).Width(width)
+	innerWidth := max(14, width-style.GetHorizontalFrameSize())
+	contentHeight := max(2, height-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-1)
 
-	lines := k.buildComponentLines(entries, innerWidth)
+	lines := k.buildComponentLines(innerWidth)
 	maxScroll := 0
 	if len(lines) > innerHeight {
 		maxScroll = len(lines) - innerHeight
@@ -387,23 +356,26 @@ func (k KnowledgeTab) renderComponentsPane(entries []knowledgeSectionEntry, widt
 		visible = append(visible, "")
 	}
 
-	title := sectionTitleStyle.Render("Details")
-	if compact {
-		title = sectionTitleStyle.Render("Details") + dimStyle.Render("  h to go back")
-	}
-	divider := dimStyle.Render(strings.Repeat("─", max(8, innerWidth)))
-	return lipgloss.NewStyle().Width(innerWidth).MaxWidth(innerWidth).Height(height).MaxHeight(height).Render(title + "\n" + divider + "\n" + strings.Join(visible, "\n"))
+	title := sectionTitleStyle.Render("Components")
+	content := lipgloss.NewStyle().
+		Width(innerWidth).
+		MaxWidth(innerWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(title + "\n" + strings.Join(visible, "\n"))
+	return style.Render(content)
 }
 
-func (k KnowledgeTab) buildComponentLines(entries []knowledgeSectionEntry, width int) []string {
-	entry, ok := k.currentSectionFromEntries(entries)
+func (k KnowledgeTab) buildComponentLines(width int) []string {
+	entry, ok := k.currentSection()
 	if !ok {
 		return []string{dimStyle.Render("Select a section to inspect its components.")}
 	}
 
 	lines := []string{
 		headerStyle.Render(truncateWidth(entry.Section.Title, width)),
-		truncateWidth(fmt.Sprintf("Components: %d  •  Quiz: %s", len(entry.Components), knowledgeDetailedMetrics(entry.Metrics)), width),
+		truncateWidth(fmt.Sprintf("Class: %s  •  Components: %d", emptyFallback(entry.Section.Class, "unclassified"), len(entry.Components)), width),
+		truncateWidth(fmt.Sprintf("Quiz: %s", knowledgeDetailedMetrics(entry.Metrics)), width),
 	}
 	if len(entry.Section.Tags) > 0 {
 		lines = append(lines, truncateWidth("Tags: "+strings.Join(entry.Section.Tags, ", "), width))
@@ -448,19 +420,12 @@ func (k KnowledgeTab) currentSection() (knowledgeSectionEntry, bool) {
 	return k.entries[k.selectedSection], true
 }
 
-func (k KnowledgeTab) currentSectionFromEntries(entries []knowledgeSectionEntry) (knowledgeSectionEntry, bool) {
-	if len(entries) == 0 || k.selectedSection < 0 || k.selectedSection >= len(entries) {
-		return knowledgeSectionEntry{}, false
-	}
-	return entries[k.selectedSection], true
-}
-
-func (k KnowledgeTab) componentMaxScroll(selectedClass string) int {
+func (k KnowledgeTab) componentMaxScroll() int {
 	innerWidth, innerHeight := k.componentInnerDimensions()
 	if innerWidth <= 0 || innerHeight <= 0 {
 		return 0
 	}
-	lines := k.buildComponentLines(k.filteredEntries(selectedClass), innerWidth)
+	lines := k.buildComponentLines(innerWidth)
 	if len(lines) <= innerHeight {
 		return 0
 	}
@@ -485,23 +450,32 @@ func (k KnowledgeTab) componentInnerDimensions() (int, int) {
 	if k.width <= 0 || k.height <= 0 {
 		return 0, 0
 	}
-	layout := knowledgeLayoutFor(k.width, k.height, knowledgeMetaHeight)
-	return max(14, layout.detailWidth()), max(1, layout.paneHeight-2)
+	layout := knowledgeLayoutFor(k.width, k.height, 3)
+	style := knowledgePaneBorderStyle(false)
+	innerWidth := max(14, layout.rightWidth-style.GetHorizontalFrameSize())
+	contentHeight := max(2, layout.rightHeight-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-1)
+	return innerWidth, innerHeight
 }
 
 func (k KnowledgeTab) sectionInnerDimensions() (int, int) {
 	if k.width <= 0 || k.height <= 0 {
 		return 0, 0
 	}
-	layout := knowledgeLayoutFor(k.width, k.height, knowledgeMetaHeight)
-	return max(12, layout.listWidth()), max(1, layout.paneHeight-2)
+	layout := knowledgeLayoutFor(k.width, k.height, 3)
+	style := knowledgePaneBorderStyle(false)
+	innerWidth := max(12, layout.leftWidth-style.GetHorizontalFrameSize())
+	contentHeight := max(2, layout.leftHeight-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-1)
+	return innerWidth, innerHeight
 }
 
 type knowledgeLayout struct {
-	compact    bool
-	leftWidth  int
-	rightWidth int
-	paneHeight int
+	stacked     bool
+	leftWidth   int
+	rightWidth  int
+	leftHeight  int
+	rightHeight int
 }
 
 func knowledgeLayoutFor(width, height, metaHeight int) knowledgeLayout {
@@ -509,27 +483,42 @@ func knowledgeLayoutFor(width, height, metaHeight int) knowledgeLayout {
 		return knowledgeLayout{}
 	}
 
-	paneHeight := max(6, height-metaHeight-1)
-	if width < knowledgeCompactMinWidth || height < knowledgeCompactMinHeight {
-		return knowledgeLayout{compact: true, leftWidth: width, rightWidth: width, paneHeight: paneHeight}
+	paneHeight := max(8, height-metaHeight-1)
+	leftWidth := clamp(width/3, 20, max(20, width-knowledgeSplitMinRightWidth-1))
+	rightWidth := width - leftWidth - 1
+	canSplit := width >= knowledgeSplitMinTotalWidth && rightWidth >= knowledgeSplitMinRightWidth
+	if canSplit {
+		return knowledgeLayout{
+			stacked:     false,
+			leftWidth:   leftWidth,
+			rightWidth:  rightWidth,
+			leftHeight:  paneHeight,
+			rightHeight: paneHeight,
+		}
 	}
 
-	leftWidth := clamp(width/3, 24, max(24, width-36))
-	rightWidth := max(28, width-leftWidth-3)
-	return knowledgeLayout{leftWidth: leftWidth, rightWidth: rightWidth, paneHeight: paneHeight}
-}
+	leftHeight := max(4, paneHeight/3)
+	rightHeight := max(4, paneHeight-leftHeight)
+	if leftHeight+rightHeight > paneHeight {
+		rightHeight = paneHeight - leftHeight
+	}
+	if rightHeight < 4 {
+		rightHeight = 4
+		leftHeight = max(4, paneHeight-rightHeight)
+	}
 
-func (l knowledgeLayout) listWidth() int {
-	return l.leftWidth
-}
-
-func (l knowledgeLayout) detailWidth() int {
-	return l.rightWidth
+	return knowledgeLayout{
+		stacked:     true,
+		leftWidth:   width,
+		rightWidth:  width,
+		leftHeight:  leftHeight,
+		rightHeight: rightHeight,
+	}
 }
 
 func (p knowledgePane) label() string {
 	if p == knowledgePaneComponents {
-		return "details"
+		return "components"
 	}
 	return "sections"
 }
@@ -583,13 +572,6 @@ func knowledgeCompactMetrics(metrics knowledgeQuizMetrics) string {
 	return fmt.Sprintf("Quiz: %d attempts  •  %.0f%% accuracy", metrics.Attempts, metrics.Accuracy*100)
 }
 
-func knowledgeSummaryMetrics(metrics knowledgeQuizMetrics) string {
-	if metrics.Attempts == 0 {
-		return "no quiz yet"
-	}
-	return fmt.Sprintf("%.0f%% accuracy", metrics.Accuracy*100)
-}
-
 func knowledgeDetailedMetrics(metrics knowledgeQuizMetrics) string {
 	if metrics.Attempts == 0 {
 		return "no attempts yet"
@@ -609,60 +591,6 @@ func emptyFallback(value, fallback string) string {
 	return value
 }
 
-func (k KnowledgeTab) prepare(selectedClass string) KnowledgeTab {
-	entries := k.filteredEntries(selectedClass)
-	if len(entries) == 0 {
-		k.selectedSection = 0
-		k.componentScroll = 0
-		return k
-	}
-
-	selectedID := ""
-	if len(k.entries) > 0 && k.selectedSection >= 0 && k.selectedSection < len(k.entries) {
-		selectedID = k.entries[k.selectedSection].Section.ID
-	}
-	if selectedID != "" {
-		found := false
-		for i, entry := range entries {
-			if entry.Section.ID == selectedID {
-				k.selectedSection = i
-				found = true
-				break
-			}
-		}
-		if !found {
-			k.selectedSection = 0
-		}
-	} else {
-		k.selectedSection = clamp(k.selectedSection, 0, len(entries)-1)
-	}
-
-	k.componentScroll = clamp(k.componentScroll, 0, k.componentMaxScroll(selectedClass))
-	return k
-}
-
-func (k KnowledgeTab) filteredEntries(selectedClass string) []knowledgeSectionEntry {
-	className := strings.TrimSpace(selectedClass)
-	if className == "" {
-		return k.entries
-	}
-	filtered := make([]knowledgeSectionEntry, 0, len(k.entries))
-	for _, entry := range k.entries {
-		if strings.EqualFold(strings.TrimSpace(entry.Section.Class), className) {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
-}
-
-func knowledgeCounts(entries []knowledgeSectionEntry) (int, int) {
-	components := 0
-	for _, entry := range entries {
-		components += len(entry.Components)
-	}
-	return len(entries), components
-}
-
 func knowledgeWrapTextLines(text string, width int) []string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -670,6 +598,17 @@ func knowledgeWrapTextLines(text string, width int) []string {
 	}
 	rendered := lipgloss.NewStyle().Width(width).MaxWidth(width).Render(trimmed)
 	return strings.Split(strings.ReplaceAll(rendered, "\r\n", "\n"), "\n")
+}
+
+func knowledgePaneBorderStyle(active bool) lipgloss.Style {
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(0, 1)
+	if active {
+		style = style.BorderForeground(lipgloss.Color("117"))
+	}
+	return style
 }
 
 func knowledgeSectionRowStyle(selected, active bool) lipgloss.Style {

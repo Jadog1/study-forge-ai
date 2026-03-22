@@ -1,0 +1,19 @@
+flowchart LR
+    A[Ranked candidates] --> B[Orchestrator agent]
+
+    B --> C{Directives parse and validate?}
+    C -- No --> D[Repair feedback to orchestrator]
+    D --> B
+    C -- Yes --> E[Directive list]
+
+    E --> F[Component question agent per directive]
+    F --> G{Questions parse and validate?}
+    G -- No --> H[Repair feedback to component agent]
+    H --> F
+    G -- Yes --> I[Accepted question sections]
+
+    I --> J{Any directive failed?}
+    J -- Yes --> K[Redistribute failed count to unused candidates]
+    K --> F
+    J -- No --> L[Merge all agent outputs]
+    L --> M[Finalize quiz artifacts]
