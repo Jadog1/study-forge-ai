@@ -12,7 +12,7 @@ performance, streams chat responses in-app, and integrates sfq search.
 ## Requirements
 
 - Go 1.21+
-- [`studyforge`](https://github.com/studyforge/studyforge) installed and on `$PATH`
+- [`studyforge`](https://github.com/Jadog1/study-forge) installed and on `$PATH`
 - An API key for OpenAI, Anthropic Claude, VoyageAI, or a locally running Ollama instance
 
 ---
