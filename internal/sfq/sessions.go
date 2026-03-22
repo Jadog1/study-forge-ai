@@ -62,7 +62,7 @@ func parseHistoryPayload(raw []byte) ([]SessionResult, error) {
 	for _, obj := range objects {
 		session := SessionResult{
 			SessionID:   pickString(obj, "id", "session_id", "sessionId"),
-			SourcePath:  pickString(obj, "source", "source_path", "source_file", "sourceFile", "quiz_path", "quizPath", "file", "path"),
+			SourcePath:  pickString(obj, "source", "source_path", "source_file", "sourceFile", "quiz_path", "quizPath", "quiz_file", "quizFile", "file", "path"),
 			CompletedAt: pickTime(obj, "completed_at", "completedAt", "finished_at", "finishedAt", "ended_at", "endedAt", "created_at", "createdAt"),
 		}
 		if session.SessionID == "" {
@@ -91,8 +91,8 @@ func parseResultsPayload(sessionID string, raw []byte) (*SessionResult, error) {
 	result := &SessionResult{
 		SessionID: sessionID,
 		SourcePath: firstNonEmpty(
-			pickString(obj, "source", "source_path", "source_file", "sourceFile", "quiz_path", "quizPath", "file", "path"),
-			pickNestedString(obj, "session", "source", "source_path", "source_file", "sourceFile", "quiz_path", "quizPath", "file", "path"),
+			pickString(obj, "source", "source_path", "source_file", "sourceFile", "quiz_path", "quizPath", "quiz_file", "quizFile", "file", "path"),
+			pickNestedString(obj, "session", "source", "source_path", "source_file", "sourceFile", "quiz_path", "quizPath", "quiz_file", "quizFile", "file", "path"),
 		),
 		CompletedAt: firstNonZeroTime(
 			pickTime(obj, "completed_at", "completedAt", "finished_at", "finishedAt", "ended_at", "endedAt", "created_at", "createdAt"),
@@ -120,8 +120,8 @@ func parseResultsPayload(sessionID string, raw []byte) (*SessionResult, error) {
 				pickNestedString(answerObj, "response", "value", "text", "answer"),
 			),
 			AnsweredAt: firstNonZeroTime(
-				pickTime(answerObj, "answered_at", "answeredAt", "at", "timestamp", "created_at", "createdAt"),
-				pickNestedTime(answerObj, "response", "answered_at", "answeredAt", "at", "timestamp", "created_at", "createdAt"),
+				pickTime(answerObj, "answered_at", "answeredAt", "submitted_at", "submittedAt", "at", "timestamp", "created_at", "createdAt"),
+				pickNestedTime(answerObj, "response", "answered_at", "answeredAt", "submitted_at", "submittedAt", "at", "timestamp", "created_at", "createdAt"),
 			),
 		})
 	}

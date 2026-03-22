@@ -207,3 +207,135 @@ func TestAppendQuizQuestionHistory_AppendsToSectionAndComponent(t *testing.T) {
 		t.Fatalf("expected stored user answer, got %#v", entry)
 	}
 }
+
+func TestAppendQuizQuestionHistory_FallsBackSectionFromComponent(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", origHome)
+		_ = os.Setenv("USERPROFILE", origUserProfile)
+	})
+	_ = os.Setenv("HOME", tmp)
+	_ = os.Setenv("USERPROFILE", tmp)
+
+	if _, err := config.EnsureInitialized(); err != nil {
+		t.Fatalf("ensure initialized: %v", err)
+	}
+
+	secIdx := &SectionIndex{SchemaVersion: 1}
+	secIdx.AddOrUpdate(Section{ID: "sec-fallback", Class: "ml4t", Title: "Fallback Section"})
+	cmpIdx := &ComponentIndex{SchemaVersion: 1}
+	cmpIdx.AddOrUpdate(Component{ID: "cmp-fallback", SectionID: "sec-fallback", Class: "ml4t", Kind: "fact", Content: "Fact"})
+	if err := SaveSectionIndex(secIdx); err != nil {
+		t.Fatalf("save section index: %v", err)
+	}
+	if err := SaveComponentIndex(cmpIdx); err != nil {
+		t.Fatalf("save component index: %v", err)
+	}
+
+	quizDoc := Quiz{
+		Title: "Quiz",
+		Class: "ml4t",
+		Sections: []QuizSection{{
+			ID:          "q-fallback-1",
+			Question:    "Fallback question",
+			Answer:      "A",
+			ComponentID: "cmp-fallback",
+		}},
+	}
+	results := QuizResults{
+		QuizID:      "attempt-1",
+		CompletedAt: time.Now().UTC(),
+		Results: []QuizResult{{
+			QuestionID:  "q-fallback-1",
+			Correct:     true,
+			UserAnswer:  "A",
+			AnsweredAt:  time.Now().UTC(),
+			ComponentID: "cmp-fallback",
+		}},
+	}
+
+	if err := AppendQuizQuestionHistory("ml4t", quizDoc, results); err != nil {
+		t.Fatalf("append quiz history: %v", err)
+	}
+
+	updatedSec, err := LoadSectionIndex()
+	if err != nil {
+		t.Fatalf("load section index: %v", err)
+	}
+	updatedCmp, err := LoadComponentIndex()
+	if err != nil {
+		t.Fatalf("load component index: %v", err)
+	}
+
+	if len(updatedSec.Sections) != 1 || len(updatedSec.Sections[0].QuestionHistory) != 1 {
+		t.Fatalf("expected section history via component fallback, got %#v", updatedSec.Sections)
+	}
+	if len(updatedCmp.Components) != 1 || len(updatedCmp.Components[0].QuestionHistory) != 1 {
+		t.Fatalf("expected component history entry, got %#v", updatedCmp.Components)
+	}
+}
+
+func TestAppendQuizQuestionHistory_UnknownSectionIDFallsBackToComponentSection(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", origHome)
+		_ = os.Setenv("USERPROFILE", origUserProfile)
+	})
+	_ = os.Setenv("HOME", tmp)
+	_ = os.Setenv("USERPROFILE", tmp)
+
+	if _, err := config.EnsureInitialized(); err != nil {
+		t.Fatalf("ensure initialized: %v", err)
+	}
+
+	secIdx := &SectionIndex{SchemaVersion: 1}
+	secIdx.AddOrUpdate(Section{ID: "sec-known", Class: "ml4t", Title: "Known Section"})
+	cmpIdx := &ComponentIndex{SchemaVersion: 1}
+	cmpIdx.AddOrUpdate(Component{ID: "cmp-known", SectionID: "sec-known", Class: "ml4t", Kind: "fact", Content: "Fact"})
+	if err := SaveSectionIndex(secIdx); err != nil {
+		t.Fatalf("save section index: %v", err)
+	}
+	if err := SaveComponentIndex(cmpIdx); err != nil {
+		t.Fatalf("save component index: %v", err)
+	}
+
+	quizDoc := Quiz{
+		Title: "Quiz",
+		Class: "ml4t",
+		Sections: []QuizSection{{
+			ID:          "q-unknown-sec",
+			Question:    "Question",
+			Answer:      "A",
+			SectionID:   "Human Readable Section Title",
+			ComponentID: "cmp-known",
+		}},
+	}
+	results := QuizResults{
+		QuizID:      "attempt-2",
+		CompletedAt: time.Now().UTC(),
+		Results: []QuizResult{{
+			QuestionID:  "q-unknown-sec",
+			Correct:     true,
+			UserAnswer:  "A",
+			AnsweredAt:  time.Now().UTC(),
+			ComponentID: "cmp-known",
+		}},
+	}
+
+	if err := AppendQuizQuestionHistory("ml4t", quizDoc, results); err != nil {
+		t.Fatalf("append quiz history: %v", err)
+	}
+
+	updatedSec, err := LoadSectionIndex()
+	if err != nil {
+		t.Fatalf("load section index: %v", err)
+	}
+
+	if len(updatedSec.Sections) != 1 || len(updatedSec.Sections[0].QuestionHistory) != 1 {
+		t.Fatalf("expected section history via unknown-section fallback, got %#v", updatedSec.Sections)
+	}
+}

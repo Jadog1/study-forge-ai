@@ -125,6 +125,12 @@ func TestParseHistoryPayload_AlternativeFieldNames(t *testing.T) {
 			"s3",
 			"src3.yaml",
 		},
+		{
+			"quiz_file field",
+			`[{"session_id": "s4", "quiz_file": "C:\\tmp\\quiz.sfq"}]`,
+			"s4",
+			"C:\\tmp\\quiz.sfq",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -142,6 +148,25 @@ func TestParseHistoryPayload_AlternativeFieldNames(t *testing.T) {
 				t.Errorf("expected source %q, got %q", tt.expectSrc, result[0].SourcePath)
 			}
 		})
+	}
+}
+
+// TestParseResultsPayload_SubmittedAtParses checks newer sfq timestamp key.
+func TestParseResultsPayload_SubmittedAtParses(t *testing.T) {
+	payload := `{
+		"answers": [
+			{"question_id": "q1", "correct": true, "submitted_at": "2026-03-21T22:48:51.948233Z"}
+		]
+	}`
+	result, err := parseResultsPayload("sess-1", []byte(payload))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(result.Answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(result.Answers))
+	}
+	if result.Answers[0].AnsweredAt.IsZero() {
+		t.Fatal("expected AnsweredAt to be parsed from submitted_at")
 	}
 }
 

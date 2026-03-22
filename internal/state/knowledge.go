@@ -548,6 +548,30 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 	for _, section := range quiz.Sections {
 		quizByID[section.ID] = section
 	}
+	componentSectionByID := make(map[string]string, len(componentIndex.Components))
+	knownSectionIDs := make(map[string]bool, len(sectionIndex.Sections))
+	for _, section := range sectionIndex.Sections {
+		if !strings.EqualFold(section.Class, class) {
+			continue
+		}
+		sectionID := strings.TrimSpace(section.ID)
+		if sectionID != "" {
+			knownSectionIDs[sectionID] = true
+		}
+	}
+	for _, component := range componentIndex.Components {
+		if !strings.EqualFold(component.Class, class) {
+			continue
+		}
+		componentID := strings.TrimSpace(component.ID)
+		sectionID := strings.TrimSpace(component.SectionID)
+		if componentID == "" || sectionID == "" {
+			continue
+		}
+		if _, exists := componentSectionByID[componentID]; !exists {
+			componentSectionByID[componentID] = sectionID
+		}
+	}
 
 	for _, result := range results.Results {
 		quizSection, ok := quizByID[result.QuestionID]
@@ -561,6 +585,9 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 		componentID := strings.TrimSpace(quizSection.ComponentID)
 		if componentID == "" {
 			componentID = strings.TrimSpace(result.ComponentID)
+		}
+		if componentID != "" && (sectionID == "" || !knownSectionIDs[sectionID]) {
+			sectionID = componentSectionByID[componentID]
 		}
 
 		answeredAt := result.AnsweredAt
