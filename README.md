@@ -7,7 +7,7 @@ performance, streams chat responses in-app, and integrates sfq search.
 ![Knowledge Pipeline](./docs/flowcharts/Knowledge-Pipeline.png)
 ![Quiz Pipeline](./docs/flowcharts/Quiz-Pipeline.png)
 
-![ForgeAI Demo](./docs/ForgeAI.mp4)
+![ForgeAI Demo](./ForgeAI.mp4)
 
 ---
 
