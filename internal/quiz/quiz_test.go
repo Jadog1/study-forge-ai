@@ -160,3 +160,53 @@ func hasTag(tags []string, want string) bool {
 	}
 	return false
 }
+
+func TestFinalizeExplicitDirectives_AssignsRequestedTotal(t *testing.T) {
+	directives, err := finalizeExplicitDirectives([]OrchestratorDirective{{
+		ComponentID: "cmp-1",
+	}}, 1, "multiple-choice")
+	if err != nil {
+		t.Fatalf("finalizeExplicitDirectives returned error: %v", err)
+	}
+	if len(directives) != 1 {
+		t.Fatalf("expected 1 directive, got %d", len(directives))
+	}
+	if directives[0].QuestionCount != 1 {
+		t.Fatalf("expected question_count 1, got %d", directives[0].QuestionCount)
+	}
+	if len(directives[0].QuestionTypes) != 1 || directives[0].QuestionTypes[0] != "multiple-choice" {
+		t.Fatalf("expected default question type, got %#v", directives[0].QuestionTypes)
+	}
+}
+
+func TestFinalizeExplicitDirectives_RejectsCountMismatch(t *testing.T) {
+	_, err := finalizeExplicitDirectives([]OrchestratorDirective{{
+		ComponentID:   "cmp-1",
+		QuestionCount: 2,
+	}}, 1, "multiple-choice")
+	if err == nil {
+		t.Fatal("expected mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds requested total") {
+		t.Fatalf("expected count mismatch error, got %v", err)
+	}
+}
+
+func TestFinalizeExplicitDirectives_DefaultsMissingCountsWhenTotalAbsent(t *testing.T) {
+	directives, err := finalizeExplicitDirectives([]OrchestratorDirective{
+		{ComponentID: "cmp-1"},
+		{ComponentID: "cmp-2", QuestionCount: 2},
+	}, 0, "short-answer")
+	if err != nil {
+		t.Fatalf("finalizeExplicitDirectives returned error: %v", err)
+	}
+	if directives[0].QuestionCount != 1 {
+		t.Fatalf("expected first directive to default to 1, got %d", directives[0].QuestionCount)
+	}
+	if directives[1].QuestionCount != 2 {
+		t.Fatalf("expected second directive to preserve explicit count, got %d", directives[1].QuestionCount)
+	}
+	if len(directives[0].QuestionTypes) != 1 || directives[0].QuestionTypes[0] != "short-answer" {
+		t.Fatalf("expected default question type, got %#v", directives[0].QuestionTypes)
+	}
+}

@@ -44,6 +44,10 @@ type QuizOptions struct {
 	// Tags, when non-empty, restrict scoring to components whose section tags
 	// contain at least one matching tag.
 	Tags []string
+	// Directives, when non-empty, skip the orchestrator and use this explicit
+	// plan. This is useful for chat-driven quiz requests that already selected
+	// target components and exact counts.
+	Directives []OrchestratorDirective
 }
 
 // NewQuiz generates a new adaptive quiz for class using the three-layer
@@ -55,12 +59,17 @@ func NewQuiz(class string, opts QuizOptions, provider plugins.AIProvider, cfg *c
 // NewQuizStream is like NewQuiz but calls onProgress with agent step events
 // so callers can show live tool-call feedback in the UI.
 func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, cfg *config.Config, onProgress func(ProgressEvent)) (*state.Quiz, string, error) {
-	if opts.Count <= 0 {
-		opts.Count = 10
-	}
 	opts.TypePreference = strings.TrimSpace(opts.TypePreference)
 	if opts.TypePreference == "" {
 		opts.TypePreference = "multiple-choice"
+	}
+	if opts.Count <= 0 {
+		if len(opts.Directives) > 0 {
+			opts.Count = sumDirectiveQuestionCount(opts.Directives)
+		}
+		if opts.Count <= 0 {
+			opts.Count = 10
+		}
 	}
 
 	// ── 1. Score components ──────────────────────────────────────────────────
@@ -88,16 +97,30 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		}
 		return nil, "", fmt.Errorf("no knowledge components found for class %q — run 'sfa ingest' first", class)
 	}
-	candidates := SelectCandidates(scores, opts.Count*3) // oversample so the orchestrator has choices
+	candidates := scores
+	if len(opts.Directives) == 0 {
+		candidates = SelectCandidates(scores, opts.Count*3) // oversample so the orchestrator has choices
+	}
 
 	if onProgress != nil {
 		onProgress(ProgressEvent{Label: "Score components", Detail: fmt.Sprintf("%d candidates", len(candidates)), Done: true})
 	}
 
-	// ── 2. Orchestrator agent ────────────────────────────────────────────────
-	directives, err := runOrchestratorAgent(class, candidates, opts.Count, opts.TypePreference, provider, cfg, onProgress)
-	if err != nil {
-		return nil, "", fmt.Errorf("orchestrator: %w", err)
+	// ── 2. Quiz plan ─────────────────────────────────────────────────────────
+	var directives []OrchestratorDirective
+	if len(opts.Directives) > 0 {
+		directives, err = finalizeExplicitDirectives(opts.Directives, opts.Count, opts.TypePreference)
+		if err != nil {
+			return nil, "", fmt.Errorf("quiz plan: %w", err)
+		}
+		if onProgress != nil {
+			onProgress(ProgressEvent{Label: "Quiz plan", Detail: fmt.Sprintf("%d manual directive(s)", len(directives)), Done: true})
+		}
+	} else {
+		directives, err = runOrchestratorAgent(class, candidates, opts.Count, opts.TypePreference, provider, cfg, onProgress)
+		if err != nil {
+			return nil, "", fmt.Errorf("orchestrator: %w", err)
+		}
 	}
 
 	// ── 3. Component agents ──────────────────────────────────────────────────
@@ -117,11 +140,27 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	var allSections []state.QuizSection
 	var failedCount int // questions to redistribute
 	for _, d := range directives {
+		if strings.TrimSpace(d.ComponentID) == "" {
+			failedCount += d.QuestionCount
+			if onProgress != nil {
+				onProgress(ProgressEvent{Label: "Quiz plan", Detail: "directive missing component_id", Done: true, Err: fmt.Errorf("directive missing component_id")})
+			}
+			continue
+		}
 		cs, ok := scoreByComponent[d.ComponentID]
 		if !ok {
 			// Orchestrator referenced an unknown component – skip gracefully.
 			failedCount += d.QuestionCount
+			if onProgress != nil {
+				onProgress(ProgressEvent{Label: "Quiz plan", Detail: fmt.Sprintf("component %s not found in class knowledge", d.ComponentID), Done: true, Err: fmt.Errorf("component %s not found", d.ComponentID)})
+			}
 			continue
+		}
+		if strings.TrimSpace(d.SectionID) == "" {
+			d.SectionID = cs.Section.ID
+		}
+		if strings.TrimSpace(d.SectionTitle) == "" {
+			d.SectionTitle = cs.Section.Title
 		}
 		sections, agentErr := runComponentQuestionAgent(d, cs, provider, cfg, onProgress)
 		if agentErr != nil {
@@ -183,6 +222,89 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	normalizeQuizProvenance(q)
 
 	return saveQuiz(class, "quiz", q)
+}
+
+func finalizeExplicitDirectives(directives []OrchestratorDirective, targetCount int, defaultType string) ([]OrchestratorDirective, error) {
+	if len(directives) == 0 {
+		return nil, fmt.Errorf("at least one directive is required")
+	}
+	out := make([]OrchestratorDirective, len(directives))
+	remaining := targetCount
+	unspecified := 0
+
+	for i, directive := range directives {
+		directive.ComponentID = strings.TrimSpace(directive.ComponentID)
+		directive.SectionID = strings.TrimSpace(directive.SectionID)
+		directive.SectionTitle = strings.TrimSpace(directive.SectionTitle)
+		directive.Angle = strings.TrimSpace(directive.Angle)
+		if directive.Angle == "" {
+			directive.Angle = "check understanding"
+		}
+		if len(directive.QuestionTypes) == 0 {
+			directive.QuestionTypes = []string{defaultType}
+		}
+		for j := range directive.QuestionTypes {
+			directive.QuestionTypes[j] = strings.TrimSpace(directive.QuestionTypes[j])
+		}
+		if directive.QuestionCount < 0 {
+			return nil, fmt.Errorf("directive %d has negative question_count", i+1)
+		}
+		if directive.QuestionCount == 0 {
+			unspecified++
+		} else {
+			remaining -= directive.QuestionCount
+		}
+		out[i] = directive
+	}
+
+	if targetCount <= 0 {
+		for i := range out {
+			if out[i].QuestionCount <= 0 {
+				out[i].QuestionCount = 1
+			}
+		}
+		return out, nil
+	}
+	if remaining < 0 {
+		return nil, fmt.Errorf("directive question_count exceeds requested total of %d", targetCount)
+	}
+	if unspecified == 0 {
+		if remaining != 0 {
+			return nil, fmt.Errorf("directive question_count totals %d but requested count is %d", targetCount-remaining, targetCount)
+		}
+		return out, nil
+	}
+	if remaining < unspecified {
+		return nil, fmt.Errorf("requested count %d is too small for %d directive(s) with unspecified question_count", targetCount, unspecified)
+	}
+
+	for i := range out {
+		if out[i].QuestionCount > 0 {
+			continue
+		}
+		out[i].QuestionCount = 1
+		remaining--
+	}
+	for i := range out {
+		if remaining == 0 {
+			break
+		}
+		out[i].QuestionCount++
+		remaining--
+	}
+	return out, nil
+}
+
+func sumDirectiveQuestionCount(directives []OrchestratorDirective) int {
+	total := 0
+	for _, directive := range directives {
+		if directive.QuestionCount > 0 {
+			total += directive.QuestionCount
+			continue
+		}
+		total++
+	}
+	return total
 }
 
 // LoadQuiz reads and unmarshals a quiz YAML file from path.

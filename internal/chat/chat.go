@@ -183,8 +183,7 @@ const availableTools = `Available tools:
 - get_class_context: fetch the registered class context files for a class. Arguments: optional class (string).
 - sfq_search: run the configured SFQ search command for external related notes. Arguments: query (string).
 - sfq_schema: fetch the quiz YAML schema for strict formatting guidance when generating quizzes. No arguments.
-- generate_quiz: generate and save a new quiz for a class from its ingested notes. Arguments: class (string), optional tags (array of strings to filter topics).
-- adapt_quiz: generate an adaptive follow-up quiz targeting weak areas based on past quiz performance. Arguments: class (string).
+- generate_quiz: generate and save a new quiz for a class from its ingested notes. Arguments: class (string), optional count (int), optional type (string), optional tags (array of strings), optional directives (array of objects with component_id, optional section_id, optional section_title, optional question_count, optional question_types, optional angle). Use directives when you already chose the exact component(s) and want to bypass the quiz orchestrator.
 - list_classes: list all registered classes. No arguments.
 - list_tools: show this list of available tools and their descriptions. No arguments.`
 
@@ -193,6 +192,8 @@ func agentInstructions(className string) string {
 Use any provided class context and relevant ingested note summaries if the user asks questions about classes.
 If you need more note context, do not claim you cannot search notes. Use a tool.
 If the user asks you to generate a quiz, use the generate_quiz or adapt_quiz tool.
+Preserve explicit user constraints when calling quiz tools. If the user asks for a specific number of questions, a demo quiz, a simple quiz, or a narrow topic, pass those constraints explicitly.
+For narrowly scoped quiz requests, prefer using search_knowledge first and then call generate_quiz with explicit directives so you control the plan instead of delegating selection to the orchestrator.
 
 ` + availableTools + `
 
@@ -253,7 +254,7 @@ func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt
 			}
 		}
 
-		result, toolErr := executeToolCall(provider, cfg, className, call)
+		result, toolErr := executeToolCall(provider, cfg, className, call, onEvent)
 		if toolErr != nil {
 			result = "Tool error: " + toolErr.Error()
 		}
@@ -519,19 +520,17 @@ func describeToolCall(className string, call *toolCall) string {
 		if targetClass == "" {
 			targetClass = className
 		}
-		if targetClass != "" {
-			return fmt.Sprintf("Generating quiz for %s", targetClass)
-		}
-		return "Generating quiz"
-	case "adapt_quiz":
-		targetClass := toolString(call.Arguments, "class")
-		if targetClass == "" {
-			targetClass = className
+		count := toolInt(call.Arguments, "count", 0)
+		typePref := toolString(call.Arguments, "type")
+		tags := toolStringSlice(call.Arguments, "tags")
+		directives, err := toolQuizDirectives(call.Arguments, count, typePref)
+		if err != nil {
+			return err.Error()
 		}
 		if targetClass != "" {
-			return fmt.Sprintf("Generating adaptive quiz for %s", targetClass)
+			return fmt.Sprintf("Generating quiz for %s%s", targetClass, describeQuizRequestSuffix(count, typePref, tags, len(directives) > 0))
 		}
-		return "Generating adaptive quiz"
+		return "Generating quiz" + describeQuizRequestSuffix(count, typePref, tags, len(directives) > 0)
 	case "list_classes":
 		return "Listing registered classes"
 	case "list_tools", "print_list_tools":
@@ -593,7 +592,7 @@ func extractToolCall(resp string) (*toolCall, bool, error) {
 	return &call, true, nil
 }
 
-func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className string, call *toolCall) (string, error) {
+func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className string, call *toolCall, onEvent func(StreamEvent) error) (string, error) {
 	switch call.Name {
 	case "search_notes":
 		query := toolString(call.Arguments, "query")
@@ -668,8 +667,14 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			typePref = "multiple-choice"
 		}
 		tags := toolStringSlice(call.Arguments, "tags")
-		opts := quiz.QuizOptions{Count: count, TypePreference: typePref, Tags: tags}
-		q, path, err := quiz.NewQuiz(targetClass, opts, provider, cfg)
+		directives, err := toolQuizDirectives(call.Arguments, count, typePref)
+		if err != nil {
+			return "", err
+		}
+		opts := quiz.QuizOptions{Count: count, TypePreference: typePref, Tags: tags, Directives: directives}
+		q, path, err := quiz.NewQuizStream(targetClass, opts, provider, cfg, func(progress quiz.ProgressEvent) {
+			_ = emitQuizProgressEvent(progress, onEvent)
+		})
 		if err != nil {
 			return "", err
 		}
@@ -704,7 +709,9 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			typePref = "multiple-choice"
 		}
 		opts := quiz.QuizOptions{Count: count, TypePreference: typePref}
-		q, path, err := quiz.NewQuiz(targetClass, opts, provider, cfg)
+		q, path, err := quiz.NewQuizStream(targetClass, opts, provider, cfg, func(progress quiz.ProgressEvent) {
+			_ = emitQuizProgressEvent(progress, onEvent)
+		})
 		if err != nil {
 			return "", err
 		}
@@ -739,6 +746,22 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
+}
+
+func emitQuizProgressEvent(progress quiz.ProgressEvent, onEvent func(StreamEvent) error) error {
+	if onEvent == nil {
+		return nil
+	}
+	kind := StreamEventActionStart
+	if progress.Done {
+		kind = StreamEventActionDone
+	}
+	return onEvent(StreamEvent{
+		Kind:   kind,
+		Label:  progress.Label,
+		Detail: progress.Detail,
+		Err:    progress.Err,
+	})
 }
 
 func formatKnowledgeResults(query, className, kind string, results []search.KnowledgeResult) string {
@@ -840,6 +863,45 @@ func toolStringSlice(args map[string]any, key string) []string {
 	return result
 }
 
+func toolQuizDirectives(args map[string]any, totalCount int, typePreference string) ([]quiz.OrchestratorDirective, error) {
+	value, ok := args["directives"]
+	if !ok {
+		return nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("directives must be an array")
+	}
+	directives := make([]quiz.OrchestratorDirective, 0, len(items))
+	for index, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("directive %d must be an object", index+1)
+		}
+		directive := quiz.OrchestratorDirective{
+			ComponentID:   toolString(entry, "component_id"),
+			SectionID:     toolString(entry, "section_id"),
+			SectionTitle:  toolString(entry, "section_title"),
+			QuestionCount: toolInt(entry, "question_count", 0),
+			QuestionTypes: toolStringSlice(entry, "question_types"),
+			Angle:         toolString(entry, "angle"),
+		}
+		if len(directive.QuestionTypes) == 0 {
+			if singleType := toolString(entry, "question_type"); singleType != "" {
+				directive.QuestionTypes = []string{singleType}
+			}
+		}
+		if len(directive.QuestionTypes) == 0 && strings.TrimSpace(typePreference) != "" {
+			directive.QuestionTypes = []string{strings.TrimSpace(typePreference)}
+		}
+		directives = append(directives, directive)
+	}
+	if len(directives) == 1 && directives[0].QuestionCount == 0 && totalCount > 0 {
+		directives[0].QuestionCount = totalCount
+	}
+	return directives, nil
+}
+
 func toolString(args map[string]any, key string) string {
 	value, ok := args[key]
 	if !ok {
@@ -871,6 +933,26 @@ func toolInt(args map[string]any, key string, defaultValue int) int {
 	default:
 		return defaultValue
 	}
+}
+
+func describeQuizRequestSuffix(count int, typePreference string, tags []string, hasDirectives bool) string {
+	parts := make([]string, 0, 4)
+	if count > 0 {
+		parts = append(parts, fmt.Sprintf("%d question(s)", count))
+	}
+	if strings.TrimSpace(typePreference) != "" {
+		parts = append(parts, strings.TrimSpace(typePreference))
+	}
+	if len(tags) > 0 {
+		parts = append(parts, "tags: "+strings.Join(tags, ", "))
+	}
+	if hasDirectives {
+		parts = append(parts, "manual plan")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
 }
 
 func chunkText(s string, size int) []string {
