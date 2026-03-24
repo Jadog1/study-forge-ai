@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ const (
 	defaultModel = "gpt-4o"
 	apiURL       = "https://api.openai.com/v1/chat/completions"
 	embedAPIURL  = "https://api.openai.com/v1/embeddings"
+	envGenTemp   = "SFA_GENERATION_TEMPERATURE"
 )
 
 // Provider sends prompts to the OpenAI Chat Completions endpoint.
@@ -58,8 +61,9 @@ func (p *Provider) Generate(prompt string) (string, error) {
 // GenerateWithMetadata sends prompt to OpenAI and returns text with model usage.
 func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:    p.model,
-		Messages: []message{{Role: "user", Content: prompt}},
+		Model:       p.model,
+		Messages:    []message{{Role: "user", Content: prompt}},
+		Temperature: generationTemperature(),
 	})
 	if err != nil {
 		return plugins.GenerateResult{}, fmt.Errorf("openai: marshal request: %w", err)
@@ -112,9 +116,10 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 // StreamGenerate sends prompt to OpenAI and emits buffered content chunks.
 func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) error {
 	body, err := json.Marshal(chatRequest{
-		Model:    p.model,
-		Messages: []message{{Role: "user", Content: prompt}},
-		Stream:   true,
+		Model:       p.model,
+		Messages:    []message{{Role: "user", Content: prompt}},
+		Stream:      true,
+		Temperature: generationTemperature(),
 	})
 	if err != nil {
 		return fmt.Errorf("openai: marshal stream request: %w", err)
@@ -257,9 +262,10 @@ type message struct {
 }
 
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []message `json:"messages"`
-	Stream   bool      `json:"stream,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []message `json:"messages"`
+	Stream      bool      `json:"stream,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
 }
 
 type chatResponse struct {
@@ -341,4 +347,18 @@ func (b *streamBuffer) Flush(onChunk func(string) error) error {
 	chunk := b.pending.String()
 	b.pending.Reset()
 	return onChunk(chunk)
+}
+
+func generationTemperature() *float64 {
+	raw := strings.TrimSpace(os.Getenv(envGenTemp))
+	if raw == "" {
+		defaultTemp := 0.7
+		return &defaultTemp
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 || v > 2 {
+		defaultTemp := 0.7
+		return &defaultTemp
+	}
+	return &v
 }

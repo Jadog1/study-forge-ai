@@ -8,8 +8,10 @@ package quiz
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +25,10 @@ import (
 const (
 	provenanceTagSectionPrefix   = "src_section:"
 	provenanceTagComponentPrefix = "src_component:"
+	recentQuizSignalMaxFiles     = 12
+	recentGenerationWindow       = 72 * time.Hour
+	recentGenerationPenaltyMax   = 0.45
+	candidateExplorationRate     = 0.35
 )
 
 // ProgressEvent carries a quiz-generation progress update emitted during the
@@ -59,6 +65,11 @@ func NewQuiz(class string, opts QuizOptions, provider plugins.AIProvider, cfg *c
 // NewQuizStream is like NewQuiz but calls onProgress with agent step events
 // so callers can show live tool-call feedback in the UI.
 func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, cfg *config.Config, onProgress func(ProgressEvent)) (*state.Quiz, string, error) {
+	recentSignals := recentQuizSignals{
+		ComponentLastSeen: make(map[string]time.Time),
+		QuestionKeys:      make(map[string]bool),
+	}
+
 	opts.TypePreference = strings.TrimSpace(opts.TypePreference)
 	if opts.TypePreference == "" {
 		opts.TypePreference = "multiple-choice"
@@ -97,9 +108,13 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		}
 		return nil, "", fmt.Errorf("no knowledge components found for class %q — run 'sfa ingest' first", class)
 	}
+	if signals, signalErr := loadRecentQuizSignals(class, recentQuizSignalMaxFiles); signalErr == nil {
+		recentSignals = signals
+		scores = applyRecentGenerationPenalty(scores, recentSignals.ComponentLastSeen, time.Now().UTC(), recentGenerationWindow, recentGenerationPenaltyMax)
+	}
 	candidates := scores
 	if len(opts.Directives) == 0 {
-		candidates = SelectCandidates(scores, opts.Count*3) // oversample so the orchestrator has choices
+		candidates = SelectCandidatesDiversified(scores, opts.Count*3, candidateExplorationRate, nil)
 	}
 
 	if onProgress != nil {
@@ -212,6 +227,50 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		return nil, "", fmt.Errorf("no questions were generated — check provider configuration and logs")
 	}
 
+	allSections = filterDuplicateQuestionSections(allSections, recentSignals.QuestionKeys)
+	if missing := opts.Count - len(allSections); missing > 0 {
+		for _, cs := range candidates {
+			if missing <= 0 {
+				break
+			}
+			if assignedIDs[cs.Component.ID] {
+				continue
+			}
+			assignedIDs[cs.Component.ID] = true
+
+			count := missing
+			if count > 2 {
+				count = 2
+			}
+			extraDir := OrchestratorDirective{
+				ComponentID:   cs.Component.ID,
+				SectionID:     cs.Section.ID,
+				SectionTitle:  cs.Section.Title,
+				QuestionCount: count,
+				QuestionTypes: []string{opts.TypePreference},
+				Angle:         "novel scenario with different wording",
+			}
+			sections, agentErr := runComponentQuestionAgent(extraDir, cs, provider, cfg, onProgress)
+			if agentErr != nil {
+				if onProgress != nil {
+					onProgress(ProgressEvent{Label: "Diversity fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})
+				}
+				continue
+			}
+			filtered := filterDuplicateQuestionSections(sections, recentSignals.QuestionKeys)
+			if len(filtered) == 0 {
+				continue
+			}
+			allSections = append(allSections, filtered...)
+			missing = opts.Count - len(allSections)
+		}
+	}
+
+	if len(allSections) == 0 {
+		return nil, "", fmt.Errorf("all generated questions duplicated recent history — broaden scope or increase question type diversity")
+	}
+
+	rebalanceChoiceAnswerPositions(allSections)
 	deduplicateQuestionIDs(allSections)
 
 	q := &state.Quiz{
@@ -549,6 +608,257 @@ func deduplicateQuestionIDs(sections []state.QuizSection) {
 	for i := range sections {
 		sections[i].ID = fmt.Sprintf("q-%03d", i+1)
 	}
+}
+
+// rebalanceChoiceAnswerPositions spreads answer patterns across choice-based
+// question types while preserving question correctness. This is deterministic
+// so tests and quiz rendering are stable across runs.
+func rebalanceChoiceAnswerPositions(sections []state.QuizSection) {
+	for i := range sections {
+		sec := &sections[i]
+		if len(sec.Choices) < 2 {
+			continue
+		}
+
+		switch sec.Type {
+		case "multiple-choice", "true-false":
+			rebalanceSingleCorrectChoice(sec)
+		case "multi-select", "multi-true-false":
+			sec.Choices = stableShuffleChoices(*sec, sec.Choices)
+		case "ordering":
+			// Keep ordering unchanged: list order encodes the canonical answer.
+			continue
+		default:
+			continue
+		}
+	}
+}
+
+func rebalanceSingleCorrectChoice(sec *state.QuizSection) {
+	if sec == nil || len(sec.Choices) < 2 {
+		return
+	}
+
+	correctIdx := -1
+	correctCount := 0
+	for j, ch := range sec.Choices {
+		if ch.Correct {
+			correctCount++
+			correctIdx = j
+		}
+	}
+	if correctCount != 1 || correctIdx < 0 {
+		return
+	}
+
+	targetIdx := stableChoiceTarget(*sec, len(sec.Choices))
+	if targetIdx == correctIdx {
+		return
+	}
+	sec.Choices = moveChoice(sec.Choices, correctIdx, targetIdx)
+}
+
+func stableShuffleChoices(sec state.QuizSection, choices []state.QuizChoice) []state.QuizChoice {
+	if len(choices) < 2 {
+		return choices
+	}
+
+	type rankedChoice struct {
+		choice state.QuizChoice
+		rank   uint32
+		idx    int
+	}
+	ranked := make([]rankedChoice, len(choices))
+	for i, ch := range choices {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(stableChoiceSeed(sec)))
+		_, _ = h.Write([]byte("|" + strings.ToLower(strings.TrimSpace(ch.Text))))
+		_, _ = h.Write([]byte(fmt.Sprintf("|%d", i)))
+		ranked[i] = rankedChoice{choice: ch, rank: h.Sum32(), idx: i}
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].rank == ranked[j].rank {
+			return ranked[i].idx < ranked[j].idx
+		}
+		return ranked[i].rank < ranked[j].rank
+	})
+	out := make([]state.QuizChoice, len(choices))
+	for i := range ranked {
+		out[i] = ranked[i].choice
+	}
+	return out
+}
+
+func stableChoiceTarget(sec state.QuizSection, size int) int {
+	if size <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(stableChoiceSeed(sec)))
+	return int(h.Sum32() % uint32(size))
+}
+
+func stableChoiceSeed(sec state.QuizSection) string {
+	return strings.ToLower(strings.TrimSpace(sec.Question)) +
+		"|" + strings.TrimSpace(sec.SectionID) +
+		"|" + strings.TrimSpace(sec.ComponentID) +
+		"|" + strings.TrimSpace(sec.Type)
+}
+
+func moveChoice(choices []state.QuizChoice, from, to int) []state.QuizChoice {
+	if from < 0 || to < 0 || from >= len(choices) || to >= len(choices) || from == to {
+		return choices
+	}
+	moved := choices[from]
+	if from < to {
+		copy(choices[from:to], choices[from+1:to+1])
+	} else {
+		copy(choices[to+1:from+1], choices[to:from])
+	}
+	choices[to] = moved
+	return choices
+}
+
+type recentQuizSignals struct {
+	ComponentLastSeen map[string]time.Time
+	QuestionKeys      map[string]bool
+}
+
+func loadRecentQuizSignals(class string, maxFiles int) (recentQuizSignals, error) {
+	signals := recentQuizSignals{
+		ComponentLastSeen: make(map[string]time.Time),
+		QuestionKeys:      make(map[string]bool),
+	}
+	if maxFiles <= 0 {
+		return signals, nil
+	}
+
+	quizDir, err := config.Path("quizzes", class)
+	if err != nil {
+		return signals, err
+	}
+	entries, err := os.ReadDir(quizDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return signals, nil
+		}
+		return signals, fmt.Errorf("read quiz directory: %w", err)
+	}
+
+	type quizFile struct {
+		path    string
+		modTime time.Time
+	}
+	files := make([]quizFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		files = append(files, quizFile{
+			path:    filepath.Join(quizDir, entry.Name()),
+			modTime: info.ModTime().UTC(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	if len(files) > maxFiles {
+		files = files[:maxFiles]
+	}
+
+	for _, file := range files {
+		q, loadErr := LoadQuiz(file.path)
+		if loadErr != nil {
+			continue
+		}
+		normalizeQuizProvenance(q)
+		for _, sec := range q.Sections {
+			componentID := strings.TrimSpace(sec.ComponentID)
+			if componentID == "" {
+				_, componentID = extractProvenanceFromTags(sec.Tags)
+			}
+			if componentID != "" {
+				if last, ok := signals.ComponentLastSeen[componentID]; !ok || file.modTime.After(last) {
+					signals.ComponentLastSeen[componentID] = file.modTime
+				}
+			}
+			if key := normalizeQuestionKey(sec.Question); key != "" {
+				signals.QuestionKeys[key] = true
+			}
+		}
+	}
+
+	return signals, nil
+}
+
+func applyRecentGenerationPenalty(scores []ComponentScore, recent map[string]time.Time, now time.Time, window time.Duration, maxPenalty float64) []ComponentScore {
+	if len(scores) == 0 || len(recent) == 0 || window <= 0 || maxPenalty <= 0 {
+		return scores
+	}
+	if maxPenalty > 0.95 {
+		maxPenalty = 0.95
+	}
+
+	out := make([]ComponentScore, len(scores))
+	copy(out, scores)
+
+	windowSeconds := window.Seconds()
+	for i := range out {
+		componentID := strings.TrimSpace(out[i].Component.ID)
+		seenAt, ok := recent[componentID]
+		if !ok {
+			continue
+		}
+		age := now.Sub(seenAt)
+		if age < 0 {
+			age = 0
+		}
+		if age >= window {
+			continue
+		}
+		freshness := 1 - (age.Seconds() / windowSeconds)
+		penalty := maxPenalty * freshness
+		out[i].Score = out[i].Score * (1 - penalty)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func filterDuplicateQuestionSections(sections []state.QuizSection, seen map[string]bool) []state.QuizSection {
+	if len(sections) == 0 {
+		return sections
+	}
+	if seen == nil {
+		seen = make(map[string]bool)
+	}
+
+	out := make([]state.QuizSection, 0, len(sections))
+	for _, sec := range sections {
+		key := normalizeQuestionKey(sec.Question)
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, sec)
+	}
+	return out
+}
+
+func normalizeQuestionKey(question string) string {
+	question = strings.ToLower(strings.TrimSpace(question))
+	if question == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(question), " ")
 }
 
 func hasAnyTag(noteTags, filter []string) bool {

@@ -2,6 +2,7 @@ package quiz
 
 import (
 	"math"
+	"math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -104,6 +105,65 @@ func SelectCandidates(scores []ComponentScore, maxN int) []ComponentScore {
 		return scores
 	}
 	return scores[:maxN]
+}
+
+// SelectCandidatesDiversified returns a top-weighted candidate subset while
+// reserving a fraction of slots for exploration from a wider high-score window.
+//
+// explorationRate is clamped to [0.0, 1.0]. When zero, this behaves like
+// SelectCandidates. The rng parameter is optional and only used for tests.
+func SelectCandidatesDiversified(scores []ComponentScore, maxN int, explorationRate float64, rng *rand.Rand) []ComponentScore {
+	if maxN <= 0 || len(scores) <= maxN {
+		return scores
+	}
+	if explorationRate <= 0 {
+		return SelectCandidates(scores, maxN)
+	}
+	if explorationRate > 1 {
+		explorationRate = 1
+	}
+	if rng == nil {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	anchorCount := int(math.Round(float64(maxN) * (1 - explorationRate)))
+	if anchorCount < 1 {
+		anchorCount = 1
+	}
+	if anchorCount > maxN {
+		anchorCount = maxN
+	}
+
+	out := make([]ComponentScore, 0, maxN)
+	out = append(out, scores[:anchorCount]...)
+
+	remaining := maxN - anchorCount
+	if remaining <= 0 {
+		return out
+	}
+
+	windowEnd := maxN * 6
+	if windowEnd > len(scores) {
+		windowEnd = len(scores)
+	}
+	if windowEnd <= anchorCount {
+		windowEnd = len(scores)
+	}
+	pool := append([]ComponentScore(nil), scores[anchorCount:windowEnd]...)
+	if len(pool) == 0 {
+		return out
+	}
+
+	// Shuffle exploration pool so each quiz run sees a slightly different mix.
+	rng.Shuffle(len(pool), func(i, j int) {
+		pool[i], pool[j] = pool[j], pool[i]
+	})
+
+	if remaining > len(pool) {
+		remaining = len(pool)
+	}
+	out = append(out, pool[:remaining]...)
+	return out
 }
 
 func recentHistoryEntries(history []state.QuestionHistoryEntry, n int) []state.QuestionHistoryEntry {

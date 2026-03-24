@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ const (
 	apiURL           = "https://api.anthropic.com/v1/messages"
 	anthropicVersion = "2023-06-01"
 	defaultMaxTokens = 4096
+	envGenTemp       = "SFA_GENERATION_TEMPERATURE"
 )
 
 // Provider sends prompts to the Anthropic Messages endpoint.
@@ -59,9 +62,10 @@ func (p *Provider) Generate(prompt string) (string, error) {
 // GenerateWithMetadata sends prompt to Anthropic and returns text with usage.
 func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(messagesRequest{
-		Model:     p.model,
-		MaxTokens: defaultMaxTokens,
-		Messages:  []message{{Role: "user", Content: prompt}},
+		Model:       p.model,
+		MaxTokens:   defaultMaxTokens,
+		Messages:    []message{{Role: "user", Content: prompt}},
+		Temperature: generationTemperature(),
 	})
 	if err != nil {
 		return plugins.GenerateResult{}, fmt.Errorf("claude: marshal request: %w", err)
@@ -115,10 +119,11 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 // StreamGenerate sends prompt to Anthropic and emits buffered text chunks.
 func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) error {
 	body, err := json.Marshal(messagesRequest{
-		Model:     p.model,
-		MaxTokens: defaultMaxTokens,
-		Messages:  []message{{Role: "user", Content: prompt}},
-		Stream:    true,
+		Model:       p.model,
+		MaxTokens:   defaultMaxTokens,
+		Messages:    []message{{Role: "user", Content: prompt}},
+		Stream:      true,
+		Temperature: generationTemperature(),
 	})
 	if err != nil {
 		return fmt.Errorf("claude: marshal stream request: %w", err)
@@ -190,10 +195,11 @@ type message struct {
 }
 
 type messagesRequest struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	Messages  []message `json:"messages"`
-	Stream    bool      `json:"stream,omitempty"`
+	Model       string    `json:"model"`
+	MaxTokens   int       `json:"max_tokens"`
+	Messages    []message `json:"messages"`
+	Stream      bool      `json:"stream,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
 }
 
 type messagesResponse struct {
@@ -255,4 +261,18 @@ func (b *claudeStreamBuffer) Flush(onChunk func(string) error) error {
 	chunk := b.pending.String()
 	b.pending.Reset()
 	return onChunk(chunk)
+}
+
+func generationTemperature() *float64 {
+	raw := strings.TrimSpace(os.Getenv(envGenTemp))
+	if raw == "" {
+		defaultTemp := 0.7
+		return &defaultTemp
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 || v > 1 {
+		defaultTemp := 0.7
+		return &defaultTemp
+	}
+	return &v
 }

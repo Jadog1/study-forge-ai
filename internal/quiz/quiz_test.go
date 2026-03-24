@@ -210,3 +210,156 @@ func TestFinalizeExplicitDirectives_DefaultsMissingCountsWhenTotalAbsent(t *test
 		t.Fatalf("expected default question type, got %#v", directives[0].QuestionTypes)
 	}
 }
+
+func TestRebalanceChoiceAnswerPositions_MovesCorrectFromFirst(t *testing.T) {
+	sections := []state.QuizSection{
+		{
+			Type:        "multiple-choice",
+			Question:    "Alpha question?",
+			SectionID:   "sec-1",
+			ComponentID: "cmp-1",
+			Choices: []state.QuizChoice{
+				{Text: "Correct", Correct: true},
+				{Text: "Wrong 1", Correct: false},
+				{Text: "Wrong 2", Correct: false},
+				{Text: "Wrong 3", Correct: false},
+			},
+		},
+	}
+
+	rebalanceChoiceAnswerPositions(sections)
+
+	correctIdx := -1
+	for i, ch := range sections[0].Choices {
+		if ch.Correct {
+			correctIdx = i
+			break
+		}
+	}
+	if correctIdx == -1 {
+		t.Fatal("expected one correct choice to remain")
+	}
+	if correctIdx == 0 {
+		t.Fatalf("expected correct choice to move away from position A, got index %d", correctIdx)
+	}
+}
+
+func TestRebalanceChoiceAnswerPositions_PreservesChoiceSet(t *testing.T) {
+	sections := []state.QuizSection{
+		{
+			Type:        "multiple-choice",
+			Question:    "Beta question?",
+			SectionID:   "sec-2",
+			ComponentID: "cmp-2",
+			Choices: []state.QuizChoice{
+				{Text: "A", Correct: true},
+				{Text: "B", Correct: false},
+				{Text: "C", Correct: false},
+				{Text: "D", Correct: false},
+			},
+		},
+	}
+
+	rebalanceChoiceAnswerPositions(sections)
+
+	if len(sections[0].Choices) != 4 {
+		t.Fatalf("expected 4 choices to remain, got %d", len(sections[0].Choices))
+	}
+	correctCount := 0
+	texts := make(map[string]bool)
+	for _, ch := range sections[0].Choices {
+		texts[ch.Text] = true
+		if ch.Correct {
+			correctCount++
+		}
+	}
+	if correctCount != 1 {
+		t.Fatalf("expected exactly one correct choice, got %d", correctCount)
+	}
+	for _, label := range []string{"A", "B", "C", "D"} {
+		if !texts[label] {
+			t.Fatalf("missing choice %q after rebalance", label)
+		}
+	}
+}
+
+func TestRebalanceChoiceAnswerPositions_MultiSelectShufflesDeterministically(t *testing.T) {
+	sections := []state.QuizSection{
+		{
+			Type:        "multi-select",
+			Question:    "Pick all prime numbers",
+			SectionID:   "sec-ms",
+			ComponentID: "cmp-ms",
+			Choices: []state.QuizChoice{
+				{Text: "2", Correct: true},
+				{Text: "3", Correct: true},
+				{Text: "4", Correct: false},
+				{Text: "6", Correct: false},
+			},
+		},
+	}
+
+	original := append([]state.QuizChoice(nil), sections[0].Choices...)
+	rebalanceChoiceAnswerPositions(sections)
+
+	if len(sections[0].Choices) != len(original) {
+		t.Fatalf("expected same number of choices, got %d", len(sections[0].Choices))
+	}
+	if sections[0].Choices[0].Text == original[0].Text && sections[0].Choices[1].Text == original[1].Text {
+		t.Fatal("expected multi-select choice order to change to reduce fixed answer-position patterns")
+	}
+}
+
+func TestRebalanceChoiceAnswerPositions_TrueFalseMovesCorrectFromFirst(t *testing.T) {
+	sections := []state.QuizSection{
+		{
+			Type:        "true-false",
+			Question:    "The sky is blue.",
+			SectionID:   "sec-tf",
+			ComponentID: "cmp-tf",
+			Choices: []state.QuizChoice{
+				{Text: "True", Correct: true},
+				{Text: "False", Correct: false},
+			},
+		},
+	}
+
+	target := stableChoiceTarget(sections[0], len(sections[0].Choices))
+	rebalanceChoiceAnswerPositions(sections)
+
+	correctIdx := -1
+	for i, ch := range sections[0].Choices {
+		if ch.Correct {
+			correctIdx = i
+			break
+		}
+	}
+	if correctIdx != target {
+		t.Fatalf("expected true-false correct option at index %d, got %d", target, correctIdx)
+	}
+}
+
+func TestRebalanceChoiceAnswerPositions_OrderingUnchanged(t *testing.T) {
+	sections := []state.QuizSection{
+		{
+			Type:        "ordering",
+			Question:    "Order the lifecycle stages.",
+			SectionID:   "sec-order",
+			ComponentID: "cmp-order",
+			Choices: []state.QuizChoice{
+				{Text: "Stage 1", Correct: true},
+				{Text: "Stage 2", Correct: true},
+				{Text: "Stage 3", Correct: true},
+			},
+		},
+	}
+	original := append([]state.QuizChoice(nil), sections[0].Choices...)
+
+	rebalanceChoiceAnswerPositions(sections)
+
+	for i := range original {
+		if sections[0].Choices[i].Text != original[i].Text {
+			t.Fatalf("expected ordering choice %d to remain unchanged", i)
+		}
+	}
+}

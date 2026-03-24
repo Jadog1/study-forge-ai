@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ const (
 	defaultModel    = "llama3"
 	ollamaPath      = "/api/generate"
 	openAIPath      = "/v1/chat/completions"
+	envGenTemp      = "SFA_GENERATION_TEMPERATURE"
 )
 
 // Provider sends prompts to a local Ollama or OpenAI-compatible endpoint.
@@ -202,9 +205,10 @@ func (p *Provider) streamWithMetadata(prompt string, onChunk func(string) error)
 
 func (p *Provider) generateOllama(prompt, endpoint string) (generationOutcome, error) {
 	body, err := json.Marshal(generateRequest{
-		Model:  p.model,
-		Prompt: prompt,
-		Stream: false,
+		Model:   p.model,
+		Prompt:  prompt,
+		Stream:  false,
+		Options: ollamaOptions(),
 	})
 	if err != nil {
 		return generationOutcome{}, fmt.Errorf("local: marshal request: %w", err)
@@ -256,9 +260,10 @@ func (p *Provider) generateOllama(prompt, endpoint string) (generationOutcome, e
 
 func (p *Provider) streamOllama(prompt, endpoint string, onChunk func(string) error) (generationOutcome, error) {
 	body, err := json.Marshal(generateRequest{
-		Model:  p.model,
-		Prompt: prompt,
-		Stream: true,
+		Model:   p.model,
+		Prompt:  prompt,
+		Stream:  true,
+		Options: ollamaOptions(),
 	})
 	if err != nil {
 		return generationOutcome{}, fmt.Errorf("local: marshal stream request: %w", err)
@@ -335,8 +340,9 @@ func (p *Provider) streamOllama(prompt, endpoint string, onChunk func(string) er
 
 func (p *Provider) generateChatCompletion(prompt, endpoint string) (generationOutcome, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:    p.model,
-		Messages: []message{{Role: "user", Content: prompt}},
+		Model:       p.model,
+		Messages:    []message{{Role: "user", Content: prompt}},
+		Temperature: generationTemperature(),
 	})
 	if err != nil {
 		return generationOutcome{}, fmt.Errorf("local: marshal chat request: %w", err)
@@ -392,9 +398,10 @@ func (p *Provider) generateChatCompletion(prompt, endpoint string) (generationOu
 
 func (p *Provider) streamChatCompletion(prompt, endpoint string, onChunk func(string) error) (generationOutcome, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:    p.model,
-		Messages: []message{{Role: "user", Content: prompt}},
-		Stream:   true,
+		Model:       p.model,
+		Messages:    []message{{Role: "user", Content: prompt}},
+		Stream:      true,
+		Temperature: generationTemperature(),
 	})
 	if err != nil {
 		return generationOutcome{}, fmt.Errorf("local: marshal chat stream request: %w", err)
@@ -576,9 +583,10 @@ type generationOutcome struct {
 // ── wire types ───────────────────────────────────────────────────────────────
 
 type generateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Stream bool   `json:"stream"`
+	Model   string         `json:"model"`
+	Prompt  string         `json:"prompt"`
+	Stream  bool           `json:"stream"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 type generateResponse struct {
@@ -605,9 +613,10 @@ type message struct {
 }
 
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []message `json:"messages"`
-	Stream   bool      `json:"stream,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []message `json:"messages"`
+	Stream      bool      `json:"stream,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
 }
 
 type chatResponse struct {
@@ -642,4 +651,26 @@ type chatStreamResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func generationTemperature() *float64 {
+	raw := strings.TrimSpace(os.Getenv(envGenTemp))
+	if raw == "" {
+		defaultTemp := 0.7
+		return &defaultTemp
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 || v > 2 {
+		defaultTemp := 0.7
+		return &defaultTemp
+	}
+	return &v
+}
+
+func ollamaOptions() map[string]any {
+	temp := generationTemperature()
+	if temp == nil {
+		return nil
+	}
+	return map[string]any{"temperature": *temp}
 }
