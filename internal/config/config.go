@@ -23,6 +23,26 @@ type InitResult struct {
 	Created    bool
 }
 
+// AgentModelConfig overrides the provider and/or model for a specific agent
+// role. Empty fields inherit from the top-level Config settings.
+type AgentModelConfig struct {
+	// Provider selects the backend for this role ("openai", "claude", "local").
+	// Empty string means inherit from Config.Provider.
+	Provider string `yaml:"provider,omitempty"`
+	// Model selects the specific model for this role.
+	// Empty string means use the provider's configured default model.
+	Model string `yaml:"model,omitempty"`
+}
+
+// AgentModels holds optional per-role model overrides.  Any role left at its
+// zero value inherits the global provider and model settings.
+type AgentModels struct {
+	Chat             AgentModelConfig `yaml:"chat,omitempty"`
+	Ingestion        AgentModelConfig `yaml:"ingestion,omitempty"`
+	QuizOrchestrator AgentModelConfig `yaml:"quiz_orchestrator,omitempty"`
+	QuizComponent    AgentModelConfig `yaml:"quiz_component,omitempty"`
+}
+
 // Config is the top-level configuration structure.
 type Config struct {
 	// Provider selects the active AI backend: "openai", "claude", or "local".
@@ -33,6 +53,9 @@ type Config struct {
 	Voyage     VoyageConfig     `yaml:"voyage"`
 	Local      LocalConfig      `yaml:"local"`
 	SFQ        SFQConfig        `yaml:"sfq"`
+	// AgentModels allows different provider/model combinations per agent role.
+	// Leave a role at its zero value to inherit the global provider settings.
+	AgentModels AgentModels `yaml:"agent_models,omitempty"`
 	// CustomPromptContext is appended verbatim to every AI prompt.
 	// Use it to steer output style (e.g. "prefer real-world analogies").
 	CustomPromptContext string `yaml:"custom_prompt_context,omitempty"`

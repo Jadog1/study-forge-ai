@@ -88,7 +88,7 @@ func runIngestCmd(folderPath, class string, orc *orchestrator.Orchestrator, cfg 
 	go func() {
 		defer close(stream)
 
-		knowledge, err := ingestion.IngestKnowledgeFolderStream(folderPath, class, orc.Provider, orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
+		knowledge, err := ingestion.IngestKnowledgeFolderStream(folderPath, class, orchestrator.BuildProviderForRole("ingestion", cfg), orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
 			stream <- aiStreamEvent{
 				actionLabel: e.Label,
 				actionInfo:  e.Detail,
@@ -128,6 +128,14 @@ func runIngestCmd(folderPath, class string, orc *orchestrator.Orchestrator, cfg 
 // runQuizCmd generates a unified adaptive quiz for the given class, streaming
 // agent tool-call events back to the TUI as aiStreamMsgs.
 func runQuizCmd(class string, opts quiz.QuizOptions, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
+	// Build per-role providers so each agent stage can use an independently
+	// configured model (e.g. a smarter model for the planner, cheaper for gen).
+	orcProvider := orchestrator.BuildProviderForRole("quiz_orchestrator", cfg)
+	cmpProvider := orchestrator.BuildProviderForRole("quiz_component", cfg)
+	opts.ProviderOverrides = &quiz.QuizProviderOverrides{
+		Orchestrator: orcProvider,
+		Component:    cmpProvider,
+	}
 	stream := make(chan aiStreamEvent, 32)
 	go func() {
 		defer close(stream)

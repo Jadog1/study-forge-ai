@@ -158,3 +158,44 @@ func componentIndexFromID(id string) int {
 	_, _ = fmt.Sscanf(id, "%d", &idx)
 	return idx
 }
+
+func TestDifficultySignals_DeriveSupportiveBandFromRecentStruggle(t *testing.T) {
+	history := []state.QuestionHistoryEntry{
+		{Question: "What is gradient descent?", Correct: false},
+		{Question: "Explain gradient descent in one sentence", Correct: false},
+		{Question: "How do you choose a learning rate?", Correct: true},
+	}
+
+	recent := recentHistoryEntries(history, recentHistoryN)
+	if got := deriveDifficultyBand(len(history), accuracyFromHistory(recent), recentIncorrectStreak(recent)); got != "supportive" {
+		t.Fatalf("expected supportive band, got %q", got)
+	}
+}
+
+func TestDifficultySignals_DeriveAdvancedBandFromStrongRecentPerformance(t *testing.T) {
+	history := []state.QuestionHistoryEntry{
+		{Question: "What is covariance?", Correct: true},
+		{Question: "Explain covariance vs correlation", Correct: true},
+		{Question: "Predict how covariance changes after scaling", Correct: true},
+		{Question: "Why can covariance be misleading?", Correct: true},
+	}
+
+	recent := recentHistoryEntries(history, recentHistoryN)
+	if got := deriveDifficultyBand(len(history), accuracyFromHistory(recent), recentIncorrectStreak(recent)); got != "advanced" {
+		t.Fatalf("expected advanced band, got %q", got)
+	}
+}
+
+func TestThoughtProvokingRate_TracksHigherOrderQuestionShare(t *testing.T) {
+	history := []state.QuestionHistoryEntry{
+		{Question: "What is SGD?", Correct: true},
+		{Question: "Why does momentum help optimization?", Correct: true},
+		{Question: "Predict training behavior if lr is too high", Correct: false},
+		{Question: "List two optimizer names", Correct: true},
+	}
+
+	rate := thoughtProvokingRate(history)
+	if rate < 0.49 || rate > 0.51 {
+		t.Fatalf("expected thought-provoking rate near 0.50, got %.2f", rate)
+	}
+}

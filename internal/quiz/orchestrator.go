@@ -43,17 +43,21 @@ func runOrchestratorAgent(
 	pCandidates := make([]prompts.OrchestratorCandidate, len(candidates))
 	for i, s := range candidates {
 		pCandidates[i] = prompts.OrchestratorCandidate{
-			ComponentID:    s.Component.ID,
-			SectionID:      s.Section.ID,
-			SectionTitle:   s.Section.Title,
-			SectionSummary: s.Section.Summary,
-			Kind:           s.Component.Kind,
-			Content:        s.Component.Content,
-			Concepts:       s.Component.Concepts,
-			Score:          s.Score,
-			Attempts:       s.Attempts,
-			Accuracy:       s.Accuracy,
-			DaysSince:      s.DaysSinceAttempt,
+			ComponentID:          s.Component.ID,
+			SectionID:            s.Section.ID,
+			SectionTitle:         s.Section.Title,
+			SectionSummary:       s.Section.Summary,
+			Kind:                 s.Component.Kind,
+			Content:              s.Component.Content,
+			Concepts:             s.Component.Concepts,
+			Score:                s.Score,
+			Attempts:             s.Attempts,
+			Accuracy:             s.Accuracy,
+			RecentAccuracy:       s.RecentAccuracy,
+			DifficultyBand:       s.DifficultyBand,
+			ThoughtProvokingRate: s.ThoughtProvoking,
+			IncorrectStreak:      s.IncorrectStreak,
+			DaysSince:            s.DaysSinceAttempt,
 		}
 	}
 

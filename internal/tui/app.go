@@ -158,6 +158,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Global key bindings.
 	if km, ok := msg.(tea.KeyMsg); ok {
 		s := km.String()
+		if (s == "left" || s == "right") && m.activeTab == tabSettings && m.settings.shouldConsumeHorizontalArrows() {
+			return m.routeToActiveTab(msg)
+		}
 		switch s {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -171,6 +174,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab", "right":
 			if !m.isEditing(false) {
 				m.activeTab = (m.activeTab + 1) % tabCount
+				if m.activeTab == tabSettings {
+					m.settings = m.settings.onTabEnter()
+				}
 				if m.activeTab == tabKnowledge {
 					m.knowledge = m.knowledge.startLoading()
 					m.status = "Loading knowledge..."
@@ -187,6 +193,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "left":
 			if !m.isEditing(false) {
 				m.activeTab = (m.activeTab + tabCount - 1) % tabCount
+				if m.activeTab == tabSettings {
+					m.settings = m.settings.onTabEnter()
+				}
 				if m.activeTab == tabKnowledge {
 					m.knowledge = m.knowledge.startLoading()
 					m.status = "Loading knowledge..."
@@ -318,6 +327,7 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		}
 	case "settings":
 		m.activeTab = tabSettings
+		m.settings = m.settings.onTabEnter()
 		m.status = "Settings"
 	case "provider-openai":
 		m.cfg.Provider = "openai"

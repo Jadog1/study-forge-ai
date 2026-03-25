@@ -101,3 +101,47 @@ func (u *unknownEmbeddingProvider) Embed(_ []string) ([][]float64, error) {
 	return nil, fmt.Errorf("unknown embeddings provider %q — valid values: openai, voyage, local", u.name)
 }
 func (u *unknownEmbeddingProvider) Model() string { return "unknown" }
+
+// BuildProviderForRole returns an AIProvider configured for the given agent
+// role, applying per-role overrides from cfg.AgentModels when set.
+// Falls back to the global provider/model when no override is configured.
+// Valid role values: "chat", "ingestion", "quiz_orchestrator", "quiz_component".
+func BuildProviderForRole(role string, cfg *config.Config) plugins.AIProvider {
+	var override config.AgentModelConfig
+	switch role {
+	case "chat":
+		override = cfg.AgentModels.Chat
+	case "ingestion":
+		override = cfg.AgentModels.Ingestion
+	case "quiz_orchestrator":
+		override = cfg.AgentModels.QuizOrchestrator
+	case "quiz_component":
+		override = cfg.AgentModels.QuizComponent
+	}
+
+	providerName := strings.TrimSpace(override.Provider)
+	if providerName == "" {
+		providerName = cfg.Provider
+	}
+	model := strings.TrimSpace(override.Model)
+
+	switch providerName {
+	case "openai":
+		if model == "" {
+			model = cfg.OpenAI.Model
+		}
+		return openaiprovider.New(cfg.OpenAI.APIKey, model)
+	case "claude":
+		if model == "" {
+			model = cfg.Claude.Model
+		}
+		return claudeprovider.New(cfg.Claude.APIKey, model)
+	case "local":
+		if model == "" {
+			model = cfg.Local.Model
+		}
+		return localprovider.New(cfg.Local.Endpoint, model)
+	default:
+		return &unknownProvider{name: providerName}
+	}
+}

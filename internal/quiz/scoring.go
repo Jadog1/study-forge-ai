@@ -18,6 +18,10 @@ type ComponentScore struct {
 	RecentHistory    []state.QuestionHistoryEntry // up to recentHistoryN most recent
 	Attempts         int
 	Accuracy         float64 // 0.0–1.0; 0.5 when never attempted (neutral)
+	RecentAccuracy   float64 // 0.0–1.0 over RecentHistory window; 0.5 when empty
+	IncorrectStreak  int     // consecutive incorrect answers from most recent backwards
+	ThoughtProvoking float64 // 0.0–1.0 share of recent questions with higher-order cues
+	DifficultyBand   string  // supportive, balanced, advanced
 	DaysSinceAttempt float64 // 999 when never attempted
 	Score            float64
 }
@@ -52,6 +56,10 @@ func ScoreComponents(class string, secIdx *state.SectionIndex, cmpIdx *state.Com
 		history := cmp.QuestionHistory
 		attempts := len(history)
 		recent := recentHistoryEntries(history, recentHistoryN)
+		recentAccuracy := accuracyFromHistory(recent)
+		incorrectStreak := recentIncorrectStreak(recent)
+		thoughtProvoking := thoughtProvokingRate(recent)
+		difficultyBand := deriveDifficultyBand(attempts, recentAccuracy, incorrectStreak)
 
 		var adjustedAccuracy float64
 		if attempts == 0 {
@@ -87,6 +95,10 @@ func ScoreComponents(class string, secIdx *state.SectionIndex, cmpIdx *state.Com
 			RecentHistory:    recent,
 			Attempts:         attempts,
 			Accuracy:         adjustedAccuracy,
+			RecentAccuracy:   recentAccuracy,
+			IncorrectStreak:  incorrectStreak,
+			ThoughtProvoking: thoughtProvoking,
+			DifficultyBand:   difficultyBand,
 			DaysSinceAttempt: daysSince,
 			Score:            score,
 		})
@@ -174,4 +186,61 @@ func recentHistoryEntries(history []state.QuestionHistoryEntry, n int) []state.Q
 		return history
 	}
 	return history[len(history)-n:]
+}
+
+func accuracyFromHistory(history []state.QuestionHistoryEntry) float64 {
+	if len(history) == 0 {
+		return 0.5
+	}
+	correct := 0
+	for _, h := range history {
+		if h.Correct {
+			correct++
+		}
+	}
+	return float64(correct) / float64(len(history))
+}
+
+func recentIncorrectStreak(history []state.QuestionHistoryEntry) int {
+	streak := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Correct {
+			break
+		}
+		streak++
+	}
+	return streak
+}
+
+func thoughtProvokingRate(history []state.QuestionHistoryEntry) float64 {
+	if len(history) == 0 {
+		return 0
+	}
+	keywords := []string{
+		"why", "how", "compare", "contrast", "explain", "justify", "predict", "evaluate", "trade-off", "scenario",
+	}
+	hits := 0
+	for _, h := range history {
+		question := strings.ToLower(strings.TrimSpace(h.Question))
+		if question == "" {
+			continue
+		}
+		for _, keyword := range keywords {
+			if strings.Contains(question, keyword) {
+				hits++
+				break
+			}
+		}
+	}
+	return float64(hits) / float64(len(history))
+}
+
+func deriveDifficultyBand(attempts int, recentAccuracy float64, incorrectStreak int) string {
+	if attempts >= 2 && (recentAccuracy <= 0.45 || incorrectStreak >= 2) {
+		return "supportive"
+	}
+	if attempts >= 3 && recentAccuracy >= 0.80 && incorrectStreak == 0 {
+		return "advanced"
+	}
+	return "balanced"
 }

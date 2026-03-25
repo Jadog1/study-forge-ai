@@ -107,6 +107,7 @@ sfa adapt linear-algebra
 | `sfa study <quiz-path>` | Print quiz questions to the terminal |
 | `sfa complete <quiz-path>` | Record quiz results interactively |
 | `sfa adapt <class>` | Generate adaptive quiz from performance data |
+| `sfa quiz-benchmark <class> [--models ...] [--runs N]` | Compare quiz-generation reliability and cost across Claude models |
 | `sfa search [--tags ...] [--class ...]` | Search ingested notes |
 | `sfa class create <name>` | Create a new class |
 | `sfa class list` | List all classes |
@@ -149,6 +150,39 @@ custom_prompt_context: |
 ```
 
 > **Security**: `~/.study-forge-ai/config.yaml` lives outside the repo so API keys stay out of version control by default. Never copy or symlink this file into the repo.
+
+## Benchmarking Claude Models
+
+Use `quiz-benchmark` to compare orchestration and question-generation behavior
+between models (for example, Haiku vs Sonnet) on your real class data.
+
+Examples:
+
+```bash
+# Quick compare (5 runs/model, 10 questions each)
+sfa quiz-benchmark linear-algebra \
+  --models claude-4-5-haiku,claude-4-5-sonnet \
+  --runs 5 \
+  --count 10 \
+  --out ./benchmark-linear-algebra.json
+
+# Focus on one topic tag and keep generated quizzes for manual review
+sfa quiz-benchmark linear-algebra \
+  --models claude-4-5-haiku,claude-4-5-sonnet \
+  --runs 8 \
+  --count 12 \
+  --tags eigenvalues \
+  --keep \
+  --out ./benchmark-eigenvalues.json
+```
+
+The benchmark reports per model:
+
+- Success rate
+- Exact question-count compliance
+- Average latency
+- Average orchestrator/component retry counts
+- Token usage and estimated cost
 
 ### Recommended: use environment variables
 

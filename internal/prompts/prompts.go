@@ -53,17 +53,21 @@ concepts:
 // OrchestratorCandidate describes one knowledge component that the orchestrator
 // LLM agent may choose to include in its quiz plan.
 type OrchestratorCandidate struct {
-	ComponentID    string   `json:"component_id"`
-	SectionID      string   `json:"section_id"`
-	SectionTitle   string   `json:"section_title"`
-	SectionSummary string   `json:"section_summary"`
-	Kind           string   `json:"kind"`
-	Content        string   `json:"content"`
-	Concepts       []string `json:"concepts"`
-	Score          float64  `json:"score"`
-	Attempts       int      `json:"attempts"`
-	Accuracy       float64  `json:"accuracy"`
-	DaysSince      float64  `json:"days_since"`
+	ComponentID          string   `json:"component_id"`
+	SectionID            string   `json:"section_id"`
+	SectionTitle         string   `json:"section_title"`
+	SectionSummary       string   `json:"section_summary"`
+	Kind                 string   `json:"kind"`
+	Content              string   `json:"content"`
+	Concepts             []string `json:"concepts"`
+	Score                float64  `json:"score"`
+	Attempts             int      `json:"attempts"`
+	Accuracy             float64  `json:"accuracy"`
+	RecentAccuracy       float64  `json:"recent_accuracy"`
+	IncorrectStreak      int      `json:"incorrect_streak"`
+	ThoughtProvokingRate float64  `json:"thought_provoking_rate"`
+	DifficultyBand       string   `json:"difficulty_band"`
+	DaysSince            float64  `json:"days_since"`
 }
 
 // RecentQuestionEntry is one past question shown to a component agent so it
@@ -87,6 +91,8 @@ type ComponentQuestionContext struct {
 	QuestionCount    int
 	QuestionTypes    []string
 	Angle            string
+	DifficultyBand   string
+	DifficultyGuide  string
 	RecentHistory    []RecentQuestionEntry
 }
 
@@ -101,6 +107,11 @@ func OrchestratorPrompt(class string, candidates []OrchestratorCandidate, totalC
 	b.WriteString("Supported types: multiple-choice, multi-select, true-false, multi-true-false, short-answer, ordering\n\n")
 	b.WriteString("Rules:\n")
 	b.WriteString("- Prioritise components with high scores (weak, novel, or not seen recently).\n")
+	b.WriteString("- Use difficulty_band and recent_accuracy to tune challenge per component:\n")
+	b.WriteString("  supportive -> simpler, confidence-building checks with concrete contexts.\n")
+	b.WriteString("  balanced -> mix straightforward and moderate reasoning.\n")
+	b.WriteString("  advanced -> include cross-concept overlap, transfer, or thought-provoking prompts.\n")
+	b.WriteString("- Avoid a monolithic tone. If recent thought-provoking rate is high, mix in at least one direct check.\n")
 	b.WriteString("- You MAY choose a different question type per component if the content suits it better.\n")
 	b.WriteString("- The sum of question_count across all directives MUST equal the requested total.\n")
 	b.WriteString("- Assign an 'angle' hint to each directive as a short creative framing for the question writer.\n")
@@ -164,8 +175,8 @@ func OrchestratorPrompt(class string, candidates []OrchestratorCandidate, totalC
 			if len(content) > limit {
 				content = content[:limit-3] + "..."
 			}
-			fmt.Fprintf(&b, "  [%d] component_id=%q kind=%s score=%.3f attempts=%d accuracy=%.0f%% days_since=%.0f\n      %s\n",
-				g.Indices[j], c.ComponentID, c.Kind, c.Score, c.Attempts, c.Accuracy*100, c.DaysSince, content)
+			fmt.Fprintf(&b, "  [%d] component_id=%q kind=%s score=%.3f attempts=%d accuracy=%.0f%% recent_accuracy=%.0f%% incorrect_streak=%d thought_rate=%.0f%% difficulty=%s days_since=%.0f\n      %s\n",
+				g.Indices[j], c.ComponentID, c.Kind, c.Score, c.Attempts, c.Accuracy*100, c.RecentAccuracy*100, c.IncorrectStreak, c.ThoughtProvokingRate*100, c.DifficultyBand, c.DaysSince, content)
 		}
 	}
 	b.WriteString("\nRespond with ONLY a JSON array (no prose, no markdown fences):\n")
@@ -193,6 +204,12 @@ func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string)
 	if ctx.Angle != "" {
 		fmt.Fprintf(&b, "Framing angle: %s\n", ctx.Angle)
 	}
+	if ctx.DifficultyBand != "" {
+		fmt.Fprintf(&b, "Difficulty band: %s\n", ctx.DifficultyBand)
+	}
+	if ctx.DifficultyGuide != "" {
+		fmt.Fprintf(&b, "Difficulty guidance: %s\n", ctx.DifficultyGuide)
+	}
 	if len(ctx.RecentHistory) > 0 {
 		b.WriteString("\nRecent questions on this component (avoid repetition):\n")
 		for _, h := range ctx.RecentHistory {
@@ -208,6 +225,8 @@ func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string)
 	b.WriteString("- Do NOT use markdown code fences.\n")
 	b.WriteString("- Do NOT include any leading or trailing prose.\n")
 	b.WriteString("- Always set 'section_id' and 'component_id' from the values given above.\n")
+	b.WriteString("- Adapt difficulty to the requested band and guidance while keeping questions answerable from provided context.\n")
+	b.WriteString("- Mix cognitive styles when generating multiple questions; do not make every question thought-provoking.\n")
 	b.WriteString("- For multiple-choice/multi-select: include a 'choices:' list with 'text:' and 'correct:' fields.\n")
 	b.WriteString("- For any choice-based type (multiple-choice, multi-select, true-false, multi-true-false): vary answer positions and avoid fixed patterns like always making the first option true/correct.\n")
 	b.WriteString("- For true-false/multi-true-false: use choices with 'correct: true/false'.\n")

@@ -101,7 +101,23 @@ func buildComponentQuestionContext(dir OrchestratorDirective, score ComponentSco
 		QuestionCount:    dir.QuestionCount,
 		QuestionTypes:    dir.QuestionTypes,
 		Angle:            dir.Angle,
+		DifficultyBand:   score.DifficultyBand,
+		DifficultyGuide:  componentDifficultyGuide(score),
 		RecentHistory:    recent,
+	}
+}
+
+func componentDifficultyGuide(score ComponentScore) string {
+	switch score.DifficultyBand {
+	case "supportive":
+		return "Start with direct, confidence-building prompts, concrete wording, and one-step reasoning before any stretch prompts."
+	case "advanced":
+		if score.ThoughtProvoking >= 0.60 {
+			return "Use higher-order transfer and overlap across related concepts, but include at least one straightforward check for pacing variety."
+		}
+		return "Increase challenge using cross-concept overlap, explanation, prediction, or scenario-based reasoning."
+	default:
+		return "Balance direct recall/application with moderate reasoning; vary the cognitive style across questions."
 	}
 }
 

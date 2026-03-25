@@ -339,6 +339,34 @@ func TestRebalanceChoiceAnswerPositions_TrueFalseMovesCorrectFromFirst(t *testin
 	}
 }
 
+func TestApplyDirectiveDifficultyGuidance_AppendsSupportiveAngleHint(t *testing.T) {
+	directives := []OrchestratorDirective{{
+		ComponentID: "cmp-1",
+		Angle:       "focus on fundamentals",
+	}}
+	scoreByComponent := map[string]ComponentScore{
+		"cmp-1": {
+			Component:      state.Component{ID: "cmp-1"},
+			DifficultyBand: "supportive",
+		},
+	}
+
+	got := applyDirectiveDifficultyGuidance(directives, scoreByComponent)
+	if !strings.Contains(got[0].Angle, "difficulty:supportive") {
+		t.Fatalf("expected supportive guidance in angle, got %q", got[0].Angle)
+	}
+}
+
+func TestDirectiveDifficultySupplement_AdvancedMixedWhenRecentThoughtProvokingHigh(t *testing.T) {
+	supplement := directiveDifficultySupplement(ComponentScore{
+		DifficultyBand:   "advanced",
+		ThoughtProvoking: 0.75,
+	})
+	if !strings.Contains(supplement, "advanced-mixed") {
+		t.Fatalf("expected advanced-mixed supplement, got %q", supplement)
+	}
+}
+
 func TestRebalanceChoiceAnswerPositions_OrderingUnchanged(t *testing.T) {
 	sections := []state.QuizSection{
 		{

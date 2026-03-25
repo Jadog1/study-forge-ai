@@ -54,6 +54,18 @@ type QuizOptions struct {
 	// plan. This is useful for chat-driven quiz requests that already selected
 	// target components and exact counts.
 	Directives []OrchestratorDirective
+	// ProviderOverrides, when non-nil, route each quiz agent to a specific AI
+	// provider instead of sharing the single provider passed to NewQuizStream.
+	// This enables granular model selection (e.g. a smarter model for the
+	// orchestrator, a cheaper one for per-component question generation).
+	ProviderOverrides *QuizProviderOverrides
+}
+
+// QuizProviderOverrides holds optional per-agent AI providers for a quiz run.
+// A nil field falls back to the provider passed to NewQuizStream.
+type QuizProviderOverrides struct {
+	Orchestrator plugins.AIProvider
+	Component    plugins.AIProvider
 }
 
 // NewQuiz generates a new adaptive quiz for class using the three-layer
@@ -132,7 +144,11 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 			onProgress(ProgressEvent{Label: "Quiz plan", Detail: fmt.Sprintf("%d manual directive(s)", len(directives)), Done: true})
 		}
 	} else {
-		directives, err = runOrchestratorAgent(class, candidates, opts.Count, opts.TypePreference, provider, cfg, onProgress)
+		orcProvider := provider
+		if opts.ProviderOverrides != nil && opts.ProviderOverrides.Orchestrator != nil {
+			orcProvider = opts.ProviderOverrides.Orchestrator
+		}
+		directives, err = runOrchestratorAgent(class, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
 		if err != nil {
 			return nil, "", fmt.Errorf("orchestrator: %w", err)
 		}
@@ -144,12 +160,19 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	for _, cs := range candidates {
 		scoreByComponent[cs.Component.ID] = cs
 	}
+	directives = applyDirectiveDifficultyGuidance(directives, scoreByComponent)
 
 	// Track which component IDs are already assigned by the orchestrator so
 	// we can redistribute failed question counts to backup candidates.
 	assignedIDs := make(map[string]bool, len(directives))
 	for _, d := range directives {
 		assignedIDs[d.ComponentID] = true
+	}
+
+	// Resolve the component agent provider (may differ from the orchestrator provider).
+	cmpProvider := provider
+	if opts.ProviderOverrides != nil && opts.ProviderOverrides.Component != nil {
+		cmpProvider = opts.ProviderOverrides.Component
 	}
 
 	var allSections []state.QuizSection
@@ -177,7 +200,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		if strings.TrimSpace(d.SectionTitle) == "" {
 			d.SectionTitle = cs.Section.Title
 		}
-		sections, agentErr := runComponentQuestionAgent(d, cs, provider, cfg, onProgress)
+		sections, agentErr := runComponentQuestionAgent(d, cs, cmpProvider, cfg, onProgress)
 		if agentErr != nil {
 			// Don't fail the whole quiz for one component failure; emit a progress error.
 			if onProgress != nil {
@@ -211,7 +234,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 				QuestionTypes: []string{opts.TypePreference},
 				Angle:         "reinforce understanding",
 			}
-			sections, agentErr := runComponentQuestionAgent(fallbackDir, cs, provider, cfg, onProgress)
+			sections, agentErr := runComponentQuestionAgent(fallbackDir, cs, cmpProvider, cfg, onProgress)
 			if agentErr != nil {
 				if onProgress != nil {
 					onProgress(ProgressEvent{Label: "Fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})
@@ -250,7 +273,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 				QuestionTypes: []string{opts.TypePreference},
 				Angle:         "novel scenario with different wording",
 			}
-			sections, agentErr := runComponentQuestionAgent(extraDir, cs, provider, cfg, onProgress)
+			sections, agentErr := runComponentQuestionAgent(extraDir, cs, cmpProvider, cfg, onProgress)
 			if agentErr != nil {
 				if onProgress != nil {
 					onProgress(ProgressEvent{Label: "Diversity fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})
@@ -281,6 +304,44 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	normalizeQuizProvenance(q)
 
 	return saveQuiz(class, "quiz", q)
+}
+
+func applyDirectiveDifficultyGuidance(directives []OrchestratorDirective, scoreByComponent map[string]ComponentScore) []OrchestratorDirective {
+	if len(directives) == 0 || len(scoreByComponent) == 0 {
+		return directives
+	}
+	out := make([]OrchestratorDirective, len(directives))
+	for i, directive := range directives {
+		out[i] = directive
+		score, ok := scoreByComponent[directive.ComponentID]
+		if !ok {
+			continue
+		}
+		supplement := directiveDifficultySupplement(score)
+		if supplement == "" {
+			continue
+		}
+		if strings.TrimSpace(out[i].Angle) == "" {
+			out[i].Angle = supplement
+			continue
+		}
+		out[i].Angle = strings.TrimSpace(out[i].Angle) + "; " + supplement
+	}
+	return out
+}
+
+func directiveDifficultySupplement(score ComponentScore) string {
+	switch score.DifficultyBand {
+	case "supportive":
+		return "difficulty:supportive; begin with simpler confidence-building checks and concrete examples"
+	case "advanced":
+		if score.ThoughtProvoking >= 0.60 {
+			return "difficulty:advanced-mixed; include cross-concept transfer but mix in one direct check"
+		}
+		return "difficulty:advanced; increase challenge with cross-concept overlap and thought-provoking reasoning"
+	default:
+		return "difficulty:balanced; mix straightforward checks with moderate reasoning"
+	}
 }
 
 func finalizeExplicitDirectives(directives []OrchestratorDirective, targetCount int, defaultType string) ([]OrchestratorDirective, error) {
