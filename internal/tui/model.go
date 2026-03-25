@@ -13,7 +13,7 @@ const (
 	tabClasses
 	tabKnowledge
 	tabSettings
-	tabSFQ
+	tabQuizDashboard
 	tabUsage
 	tabCount
 )
@@ -33,12 +33,12 @@ type model struct {
 	activeTab int
 
 	// Tab components — one per tab.
-	chat      ChatTab
-	classes   ClassesTab
-	knowledge KnowledgeTab
-	settings  SettingsTab
-	sfq       SFQTab
-	usage     UsageTab
+	chat          ChatTab
+	classes       ClassesTab
+	knowledge     KnowledgeTab
+	settings      SettingsTab
+	quizDashboard QuizDashboardTab
+	usage         UsageTab
 
 	// Overlay components — rendered on top when visible.
 	palette  PaletteModel
@@ -48,19 +48,19 @@ type model struct {
 func newModel(cfg *config.Config, orc *orchestrator.Orchestrator) model {
 	classes, _ := classpkg.List()
 	return model{
-		cfg:       cfg,
-		orc:       orc,
-		savedCfg:  cloneConfig(cfg),
-		activeTab: tabChat,
-		status:    "Ready",
-		chat:      newChatTab(),
-		classes:   newClassesTab(classes),
-		knowledge: newKnowledgeTab(),
-		settings:  newSettingsTab(),
-		sfq:       newSFQTab(),
-		usage:     newUsageTab(),
-		palette:   newPalette(),
-		workflow:  newWorkflow(),
+		cfg:           cfg,
+		orc:           orc,
+		savedCfg:      cloneConfig(cfg),
+		activeTab:     tabChat,
+		status:        "Ready",
+		chat:          newChatTab(),
+		classes:       newClassesTab(classes),
+		knowledge:     newKnowledgeTab(),
+		settings:      newSettingsTab(),
+		quizDashboard: newQuizDashboardTab(),
+		usage:         newUsageTab(),
+		palette:       newPalette(),
+		workflow:      newWorkflow(),
 	}
 }
 
@@ -80,7 +80,7 @@ func (m model) resize(width, height int) model {
 	m.classes = m.classes.resize(innerWidth)
 	m.knowledge = m.knowledge.resize(innerWidth, bodyHeight)
 	m.settings = m.settings.resize(innerWidth)
-	m.sfq = m.sfq.resize(innerWidth)
+	m.quizDashboard = m.quizDashboard.resize(innerWidth, bodyHeight)
 	m.usage = m.usage.resize(innerWidth)
 	m.palette = m.palette.resize(clamp(innerWidth, 36, 76))
 	m.workflow = m.workflow.resize(clamp(innerWidth, 28, 72))

@@ -30,7 +30,7 @@ var paletteActions = []PaletteAction{
 	{"Export Knowledge Dataset", "Save sections/components as shareable JSON", "export-knowledge"},
 	{"New Class", "Create a new study class", "new-class"},
 	{"Add Context File", "Attach a context file to the active class", "add-context"},
-	{"Quiz Dashboard", "Open the quiz metrics and history dashboard", "sfq-search"},
+	{"Quiz Dashboard", "Open the quiz metrics and history dashboard", "quiz-dashboard"},
 	{"Sync Tracked Quiz Sessions", "Import sfq tracked results into knowledge history", "sync-tracked"},
 	{"Usage History", "Review historical AI usage and cost", "usage"},
 	{"Settings", "Configure providers and preferences", "settings"},

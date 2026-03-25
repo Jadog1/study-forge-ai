@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/studyforge/study-agent/internal/state"
 )
 
@@ -87,5 +89,60 @@ func TestBuildQuizDashboardProjectionFiltersByClassAndSummarizesHistory(t *testi
 	}
 	if len(projection.Untouched) != 1 || projection.Untouched[0].Content != "Vertex form" {
 		t.Fatalf("expected untouched Vertex form component, got %+v", projection.Untouched)
+	}
+}
+
+func TestQuizDashboardTabUpdateNavigatesAndScrollsDetails(t *testing.T) {
+	now := time.Date(2026, 3, 25, 12, 0, 0, 0, time.UTC)
+	history := make([]state.QuestionHistoryEntry, 0, 18)
+	for i := 0; i < 18; i++ {
+		history = append(history, state.QuestionHistoryEntry{
+			ID:         "q-" + time.Duration(i).String(),
+			Question:   "Question number " + time.Duration(i).String() + " with enough text to require truncation in narrow layouts",
+			Correct:    i%2 == 0,
+			AnsweredAt: now.Add(-time.Duration(i) * time.Minute),
+		})
+	}
+
+	tab := newQuizDashboardTab().resize(84, 16)
+	tab, _ = tab.receive(&quizDashboardSnapshot{
+		Sections: []state.Section{{ID: "sec-a", Class: "math", Title: "Algebra", QuestionHistory: history}},
+		Components: []state.Component{{
+			ID:              "cmp-a",
+			Class:           "math",
+			SectionID:       "sec-a",
+			Kind:            "fact",
+			Content:         "Quadratic formula",
+			QuestionHistory: history,
+		}},
+		LoadedAt: now,
+	}, nil)
+
+	tab.selectedSection = 3
+	updated, _, _, _ := tab.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	if updated.activePane != quizDashboardPaneDetails {
+		t.Fatalf("expected details pane focus, got %v", updated.activePane)
+	}
+
+	updated, _, _, _ = updated.update(tea.KeyMsg{Type: tea.KeyDown})
+	if updated.detailScroll == 0 {
+		t.Fatalf("expected detail scroll to advance when details pane is focused")
+	}
+
+	updated.activePane = quizDashboardPaneSections
+	updated.selectedSection = 0
+	updated, _, _, _ = updated.update(tea.KeyMsg{Type: tea.KeyDown})
+	if updated.selectedSection != 1 {
+		t.Fatalf("expected selected section to move to 1, got %d", updated.selectedSection)
+	}
+}
+
+func TestDashboardTruncateLinesUsesEllipsis(t *testing.T) {
+	lines := dashboardTruncateLines([]string{"This is a deliberately long dashboard line"}, 14)
+	if len(lines) != 1 {
+		t.Fatalf("expected one line, got %d", len(lines))
+	}
+	if !strings.HasSuffix(lines[0], "...") {
+		t.Fatalf("expected explicit truncation marker, got %q", lines[0])
 	}
 }

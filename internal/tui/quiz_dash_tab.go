@@ -12,20 +12,36 @@ import (
 	"github.com/studyforge/study-agent/internal/state"
 )
 
-// SFQTab holds state for the quiz dashboard tab.
-type SFQTab struct {
-	loaded   bool
-	loading  bool
-	err      error
-	snapshot *quizDashboardSnapshot
+type quizDashboardPane int
+
+const (
+	quizDashboardPaneSections quizDashboardPane = iota
+	quizDashboardPaneDetails
+)
+
+const quizDashboardSectionRowHeight = 2
+
+// QuizDashboardTab holds state for the quiz dashboard tab.
+type QuizDashboardTab struct {
+	loaded          bool
+	loading         bool
+	err             error
+	snapshot        *quizDashboardSnapshot
+	selectedSection int
+	activePane      quizDashboardPane
+	detailScroll    int
+	width           int
+	height          int
 }
 
-func newSFQTab() SFQTab {
-	return SFQTab{}
+func newQuizDashboardTab() QuizDashboardTab {
+	return QuizDashboardTab{activePane: quizDashboardPaneSections}
 }
 
-func (s SFQTab) resize(width int) SFQTab {
-	return s
+func (q QuizDashboardTab) resize(width, height int) QuizDashboardTab {
+	q.width = width
+	q.height = height
+	return q
 }
 
 type quizDashboardSnapshot struct {
@@ -110,47 +126,123 @@ type quizDashboardProjection struct {
 	AllClasses       bool
 }
 
-func (s SFQTab) startLoading() SFQTab {
-	s.loading = true
-	s.err = nil
-	return s
+type quizDashboardSectionView struct {
+	Title   string
+	Summary string
+	Lines   []string
 }
 
-func (s SFQTab) update(msg tea.Msg) (SFQTab, string, tea.Cmd, bool) {
+type quizDashboardLayout struct {
+	stacked     bool
+	leftWidth   int
+	rightWidth  int
+	leftHeight  int
+	rightHeight int
+}
+
+func (q QuizDashboardTab) startLoading() QuizDashboardTab {
+	q.loading = true
+	q.err = nil
+	return q
+}
+
+func (q QuizDashboardTab) update(msg tea.Msg) (QuizDashboardTab, string, tea.Cmd, bool) {
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
 		case "r":
-			s = s.startLoading()
-			return s, "Loading quiz dashboard...", loadQuizDashboardCmd(), false
+			q = q.startLoading()
+			return q, "Loading quiz dashboard...", loadQuizDashboardCmd(), false
 		case "s":
-			return s, "Syncing tracked quiz sessions...", syncTrackedSessionsCmd(), true
+			return q, "Syncing tracked quiz sessions...", syncTrackedSessionsCmd(), true
+		case "h":
+			q.activePane = quizDashboardPaneSections
+			return q, "Dashboard sections focused", nil, false
+		case "l":
+			q.activePane = quizDashboardPaneDetails
+			return q, "Dashboard details focused", nil, false
+		case "up", "k":
+			return q.nudgeActivePane(-1), "", nil, false
+		case "down", "j":
+			return q.nudgeActivePane(1), "", nil, false
+		case "pgup":
+			return q.pageActivePane(-1), "", nil, false
+		case "pgdn":
+			return q.pageActivePane(1), "", nil, false
+		case "home":
+			return q.moveActivePaneHome(), "", nil, false
+		case "end":
+			return q.moveActivePaneEnd(), "", nil, false
 		}
 	}
-	return s, "", nil, false
+	return q, "", nil, false
 }
 
-func (s SFQTab) receive(snapshot *quizDashboardSnapshot, err error) (SFQTab, string) {
-	s.loaded = true
-	s.loading = false
-	s.snapshot = snapshot
-	s.err = err
+func (q QuizDashboardTab) nudgeActivePane(delta int) QuizDashboardTab {
+	if q.activePane == quizDashboardPaneDetails {
+		q.detailScroll = clamp(q.detailScroll+delta, 0, q.detailMaxScroll())
+		return q
+	}
+	q.selectedSection = clamp(q.selectedSection+delta, 0, q.sectionCount()-1)
+	q.detailScroll = 0
+	return q
+}
+
+func (q QuizDashboardTab) pageActivePane(direction int) QuizDashboardTab {
+	if q.activePane == quizDashboardPaneDetails {
+		page := max(3, q.detailViewportHeight()-2)
+		q.detailScroll = clamp(q.detailScroll+(direction*page), 0, q.detailMaxScroll())
+		return q
+	}
+	page := max(1, q.sectionPageSize())
+	q.selectedSection = clamp(q.selectedSection+(direction*page), 0, q.sectionCount()-1)
+	q.detailScroll = 0
+	return q
+}
+
+func (q QuizDashboardTab) moveActivePaneHome() QuizDashboardTab {
+	if q.activePane == quizDashboardPaneDetails {
+		q.detailScroll = 0
+		return q
+	}
+	q.selectedSection = 0
+	q.detailScroll = 0
+	return q
+}
+
+func (q QuizDashboardTab) moveActivePaneEnd() QuizDashboardTab {
+	if q.activePane == quizDashboardPaneDetails {
+		q.detailScroll = q.detailMaxScroll()
+		return q
+	}
+	q.selectedSection = q.sectionCount() - 1
+	q.detailScroll = 0
+	return q
+}
+
+func (q QuizDashboardTab) receive(snapshot *quizDashboardSnapshot, err error) (QuizDashboardTab, string) {
+	q.loaded = true
+	q.loading = false
+	q.snapshot = snapshot
+	q.err = err
+	q.detailScroll = 0
 	if err != nil {
-		return s, "Quiz dashboard load failed"
+		return q, "Quiz dashboard load failed"
 	}
-	return s, "Quiz dashboard refreshed"
+	q.selectedSection = clamp(q.selectedSection, 0, q.sectionCount()-1)
+	return q, "Quiz dashboard refreshed"
 }
 
-func (s SFQTab) view(width, height int, selectedClass string) string {
-	if s.loading && !s.loaded {
+func (q QuizDashboardTab) view(width, height int, selectedClass string) string {
+	if q.loading && !q.loaded {
 		return dimStyle.Render("Loading quiz dashboard...")
 	}
-	if !s.loaded && !s.loading {
+	if !q.loaded && !q.loading {
 		return dimStyle.Render("Loading quiz dashboard...")
 	}
-	if s.err != nil {
-		return errorStyle.Render("Error loading quiz dashboard: " + s.err.Error())
+	if q.err != nil {
+		return errorStyle.Render("Error loading quiz dashboard: " + q.err.Error())
 	}
-	projection := buildQuizDashboardProjection(s.snapshot, selectedClass)
+	projection := buildQuizDashboardProjection(q.snapshot, selectedClass)
 	if !projection.HasAnyQuizSignal {
 		body := projection.EmptyReason
 		if body == "" {
@@ -162,36 +254,417 @@ func (s SFQTab) view(width, height int, selectedClass string) string {
 		)
 	}
 
-	listLimit := 4
-	switch {
-	case height >= 34:
-		listLimit = 6
-	case height >= 26:
-		listLimit = 5
-	case height <= 18:
-		listLimit = 3
-	}
+	sections := buildQuizDashboardSections(projection)
+	selectedIndex := clamp(q.selectedSection, 0, len(sections)-1)
+	detailScroll := clamp(q.detailScroll, 0, quizDashboardDetailMaxScrollFor(sections[selectedIndex], width, height))
 
 	headerLines := []string{
 		truncateWidth(fmt.Sprintf("%s %s  •  %s %s", labelStyle.Render("Class filter:"), projection.ClassLabel, labelStyle.Render("Loaded:"), dashboardTimeLabel(projection.LoadedAt)), width),
-		truncateWidth(dimStyle.Render("Press r to refresh  •  s to sync tracked quiz sessions"), width),
+		truncateWidth(fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), q.activePane.label(), dimStyle.Render("h/l switch pane  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  r refresh  •  s sync")), width),
+	}
+	layout := quizDashboardLayoutFor(width, height, len(headerLines))
+	sectionPane := q.renderSectionsPane(sections, layout.leftWidth, layout.leftHeight, selectedIndex)
+	detailPane := q.renderDetailPane(sections[selectedIndex], layout.rightWidth, layout.rightHeight, detailScroll)
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sectionPane, " ", detailPane)
+	if layout.stacked {
+		body = lipgloss.JoinVertical(lipgloss.Left, sectionPane, detailPane)
+	}
+	return strings.Join(append(headerLines, body), "\n")
+}
+
+func (q QuizDashboardTab) renderSectionsPane(sections []quizDashboardSectionView, width, height, selectedIndex int) string {
+	style := knowledgePaneBorderStyle(q.activePane == quizDashboardPaneSections).Width(width)
+	innerWidth := max(18, width-style.GetHorizontalFrameSize())
+	contentHeight := max(3, height-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-2)
+	pageSize := max(1, innerHeight/quizDashboardSectionRowHeight)
+
+	start := 0
+	if selectedIndex >= pageSize {
+		start = selectedIndex - pageSize + 1
+		if selectedIndex < len(sections)-1 {
+			centered := selectedIndex - (pageSize / 2)
+			if centered > 0 {
+				start = centered
+			}
+		}
+	}
+	start = clamp(start, 0, max(0, len(sections)-pageSize))
+	end := min(len(sections), start+pageSize)
+
+	contentLines := make([]string, 0, innerHeight)
+	for i := start; i < end; i++ {
+		contentLines = append(contentLines, strings.Split(q.renderSectionRow(sections[i], innerWidth, i == selectedIndex), "\n")...)
+	}
+	for len(contentLines) < innerHeight {
+		contentLines = append(contentLines, "")
+	}
+	if len(contentLines) > innerHeight {
+		contentLines = contentLines[:innerHeight]
 	}
 
-	sections := []string{
-		renderSection("Overview", renderDashboardOverview(projection.Summary), width),
-		renderSection("Coverage", renderDashboardCoverage(projection, listLimit), width),
-		renderSection("Needs Attention", renderDashboardStruggling(projection.Struggling, listLimit), width),
-		renderSection("Recent Questions", renderDashboardRecentQuestions(projection.RecentQuestions, listLimit), width),
+	footerHint := "l inspect"
+	if q.activePane != quizDashboardPaneSections {
+		footerHint = "h focus"
 	}
-	if len(projection.PendingTracked) > 0 || len(projection.TrackedQuizzes) > 0 {
-		sections = append(sections, renderSection("Tracked Quizzes", renderDashboardTracked(projection, listLimit), width))
+	footer := dimStyle.Render(truncateWidth(fmt.Sprintf("%d/%d  •  %s", selectedIndex+1, len(sections), footerHint), innerWidth))
+	content := lipgloss.NewStyle().
+		Width(innerWidth).
+		MaxWidth(innerWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(sectionTitleStyle.Render("Sections") + "\n" + strings.Join(contentLines, "\n") + "\n" + footer)
+	return style.Render(content)
+}
+
+func (q QuizDashboardTab) renderSectionRow(section quizDashboardSectionView, width int, selected bool) string {
+	marker := " "
+	if selected {
+		marker = ">"
 	}
-	if len(projection.RecentQuizzes) > 0 && height >= 22 {
-		sections = append(sections, renderSection("Recent Quizzes", renderDashboardRecentQuizzes(projection.RecentQuizzes, projection.TrackedQuizzes, listLimit), width))
+	rowText := strings.Join([]string{
+		truncateWidth(marker+" "+emptyFallback(section.Title, "Section"), width),
+		truncateWidth("  "+emptyFallback(section.Summary, "No details yet"), width),
+	}, "\n")
+	return knowledgeSectionRowStyle(selected, selected && q.activePane == quizDashboardPaneSections).
+		Width(width).
+		MaxWidth(width).
+		Render(rowText)
+}
+
+func (q QuizDashboardTab) renderDetailPane(section quizDashboardSectionView, width, height, scroll int) string {
+	style := knowledgePaneBorderStyle(q.activePane == quizDashboardPaneDetails).Width(width)
+	innerWidth := max(20, width-style.GetHorizontalFrameSize())
+	contentHeight := max(3, height-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-2)
+
+	lines := dashboardTruncateLines(section.Lines, innerWidth)
+	if len(lines) == 0 {
+		lines = []string{dimStyle.Render("No details available.")}
+	}
+	maxScroll := max(0, len(lines)-innerHeight)
+	start := clamp(scroll, 0, maxScroll)
+	end := min(len(lines), start+innerHeight)
+	visible := append([]string{}, lines[start:end]...)
+	for len(visible) < innerHeight {
+		visible = append(visible, "")
 	}
 
-	body := strings.Join(append(headerLines, sections...), "\n")
-	return clipLines(body, max(6, height))
+	footerHint := "l focus"
+	if q.activePane == quizDashboardPaneDetails {
+		footerHint = "h sections"
+	}
+	footer := fmt.Sprintf("%d line(s)  •  %s", len(lines), footerHint)
+	if len(lines) > innerHeight {
+		footer = fmt.Sprintf("Showing %d-%d of %d  •  %s", start+1, end, len(lines), footerHint)
+	}
+
+	content := lipgloss.NewStyle().
+		Width(innerWidth).
+		MaxWidth(innerWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(sectionTitleStyle.Render(truncateWidth(section.Title, innerWidth)) + "\n" + strings.Join(visible, "\n") + "\n" + dimStyle.Render(truncateWidth(footer, innerWidth)))
+	return style.Render(content)
+}
+
+func (q QuizDashboardTab) sectionCount() int {
+	return 6
+}
+
+func (q QuizDashboardTab) sectionPageSize() int {
+	return max(1, q.sectionViewportHeight()/quizDashboardSectionRowHeight)
+}
+
+func (q QuizDashboardTab) sectionViewportHeight() int {
+	if q.width <= 0 || q.height <= 0 {
+		return 1
+	}
+	layout := quizDashboardLayoutFor(q.width, q.height, 2)
+	style := knowledgePaneBorderStyle(false)
+	contentHeight := max(3, layout.leftHeight-style.GetVerticalFrameSize())
+	return max(1, contentHeight-2)
+}
+
+func (q QuizDashboardTab) detailViewportHeight() int {
+	if q.width <= 0 || q.height <= 0 {
+		return 1
+	}
+	_, innerHeight := q.detailInnerDimensions()
+	return innerHeight
+}
+
+func (q QuizDashboardTab) detailInnerDimensions() (int, int) {
+	if q.width <= 0 || q.height <= 0 {
+		return 0, 0
+	}
+	layout := quizDashboardLayoutFor(q.width, q.height, 2)
+	style := knowledgePaneBorderStyle(false)
+	innerWidth := max(20, layout.rightWidth-style.GetHorizontalFrameSize())
+	contentHeight := max(3, layout.rightHeight-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-2)
+	return innerWidth, innerHeight
+}
+
+func (q QuizDashboardTab) detailMaxScroll() int {
+	projection := buildQuizDashboardProjection(q.snapshot, "")
+	sections := buildQuizDashboardSections(projection)
+	if len(sections) == 0 {
+		return 0
+	}
+	selectedIndex := clamp(q.selectedSection, 0, len(sections)-1)
+	_, innerHeight := q.detailInnerDimensions()
+	if innerHeight <= 0 {
+		return 0
+	}
+	lines := sections[selectedIndex].Lines
+	if len(lines) <= innerHeight {
+		return 0
+	}
+	return len(lines) - innerHeight
+}
+
+func buildQuizDashboardSections(projection quizDashboardProjection) []quizDashboardSectionView {
+	return []quizDashboardSectionView{
+		{
+			Title:   "Overview",
+			Summary: dashboardOverviewSummary(projection.Summary),
+			Lines:   buildDashboardOverviewLines(projection.Summary),
+		},
+		{
+			Title:   "Coverage",
+			Summary: fmt.Sprintf("%d hit  •  %d untouched", projection.Summary.ComponentsHit, len(projection.Untouched)),
+			Lines:   buildDashboardCoverageLines(projection),
+		},
+		{
+			Title:   "Needs Attention",
+			Summary: fmt.Sprintf("%d struggling component(s)", len(projection.Struggling)),
+			Lines:   buildDashboardStrugglingLines(projection.Struggling),
+		},
+		{
+			Title:   "Recent Questions",
+			Summary: fmt.Sprintf("%d recorded question(s)", len(projection.RecentQuestions)),
+			Lines:   buildDashboardRecentQuestionLines(projection.RecentQuestions),
+		},
+		{
+			Title:   "Tracked Quizzes",
+			Summary: fmt.Sprintf("%d tracked  •  %d pending", projection.Summary.TrackedQuizzes, projection.Summary.TrackedPending),
+			Lines:   buildDashboardTrackedLines(projection),
+		},
+		{
+			Title:   "Recent Quizzes",
+			Summary: fmt.Sprintf("%d saved quiz file(s)", len(projection.RecentQuizzes)),
+			Lines:   buildDashboardRecentQuizLines(projection.RecentQuizzes, projection.TrackedQuizzes),
+		},
+	}
+}
+
+func buildDashboardOverviewLines(summary quizDashboardSummary) []string {
+	accuracy := "-"
+	if summary.TotalAttempts > 0 {
+		accuracy = fmt.Sprintf("%.0f%%", summary.Accuracy*100)
+	}
+	return []string{
+		fmt.Sprintf("%s %d/%d", labelStyle.Render("Components hit:"), summary.ComponentsHit, summary.TotalComponents),
+		fmt.Sprintf("%s %d/%d", labelStyle.Render("Sections hit:"), summary.SectionsHit, summary.TotalSections),
+		fmt.Sprintf("%s %d", labelStyle.Render("Questions answered:"), summary.TotalAttempts),
+		fmt.Sprintf("%s %d (%s)", labelStyle.Render("Correct answers:"), summary.CorrectAnswers, accuracy),
+		fmt.Sprintf("%s %d", labelStyle.Render("Saved quizzes:"), summary.SavedQuizzes),
+		fmt.Sprintf("%s %d synced / %d pending", labelStyle.Render("Tracked quizzes:"), summary.TrackedSynced, summary.TrackedPending),
+		fmt.Sprintf("%s %s", labelStyle.Render("Latest attempt:"), dashboardTimeLabel(summary.LatestAttempt)),
+		fmt.Sprintf("%s %s", labelStyle.Render("Latest quiz:"), dashboardTimeLabel(summary.LatestQuiz)),
+		fmt.Sprintf("%s %s", labelStyle.Render("Latest tracked sync:"), dashboardTimeLabel(summary.LatestTrackedSync)),
+	}
+}
+
+func buildDashboardCoverageLines(projection quizDashboardProjection) []string {
+	lines := []string{
+		fmt.Sprintf("%s %d  •  %s %d", labelStyle.Render("Recently hit:"), len(projection.RecentlyHit), labelStyle.Render("Untouched:"), len(projection.Untouched)),
+		"",
+		dimStyle.Render("Recent coverage"),
+	}
+	lines = append(lines, buildDashboardComponentLines(projection.RecentlyHit, true)...)
+	lines = append(lines, "", dimStyle.Render("Still untouched"))
+	lines = append(lines, buildDashboardComponentLines(projection.Untouched, false)...)
+	return lines
+}
+
+func buildDashboardStrugglingLines(entries []quizDashboardComponentEntry) []string {
+	if len(entries) == 0 {
+		return []string{dimStyle.Render("No struggling components yet. Wrong answers will surface here after synced attempts.")}
+	}
+	lines := make([]string, 0, len(entries)*2)
+	for _, entry := range entries {
+		lines = append(lines, dashboardComponentSummary(entry))
+		meta := fmt.Sprintf("%s  •  %d wrong  •  streak %d  •  last %s", dashboardMetricsLabel(entry.Metrics), entry.Metrics.Incorrect, entry.IncorrectStreak, dashboardTimeLabel(entry.Metrics.LastAnswered))
+		if entry.LastIncorrect != "" {
+			lines = append(lines, dimStyle.Render("  last miss: ")+entry.LastIncorrect)
+			continue
+		}
+		lines = append(lines, dimStyle.Render("  ")+meta)
+	}
+	return lines
+}
+
+func buildDashboardRecentQuestionLines(entries []quizDashboardQuestionEntry) []string {
+	if len(entries) == 0 {
+		return []string{dimStyle.Render("No answered questions recorded yet.")}
+	}
+	lines := make([]string, 0, len(entries)*2)
+	for _, entry := range entries {
+		status := successStyle.Render("correct")
+		if !entry.Correct {
+			status = errorStyle.Render("wrong")
+		}
+		headline := fmt.Sprintf("%s  %s  •  %s", dashboardTimeLabel(entry.AnsweredAt), status, emptyFallback(entry.ComponentLabel, emptyFallback(entry.SectionTitle, emptyFallback(entry.Class, "unknown"))))
+		lines = append(lines, headline, entry.Question)
+	}
+	return lines
+}
+
+func buildDashboardTrackedLines(projection quizDashboardProjection) []string {
+	if len(projection.TrackedQuizzes) == 0 {
+		return []string{dimStyle.Render("No tracked quizzes registered yet.")}
+	}
+	lines := []string{
+		fmt.Sprintf("%s %d  •  %s %d  •  %s %s", labelStyle.Render("Registered:"), projection.Summary.TrackedQuizzes, labelStyle.Render("Pending:"), projection.Summary.TrackedPending, labelStyle.Render("Latest sync:"), dashboardTimeLabel(projection.Summary.LatestTrackedSync)),
+	}
+	if len(projection.PendingTracked) > 0 {
+		lines = append(lines, "", dimStyle.Render("Pending import"))
+		for _, entry := range projection.PendingTracked {
+			lines = append(lines, fmt.Sprintf("%s  •  %s", dashboardTrackedLabel(entry), dashboardTimeLabel(entry.RegisteredAt)))
+		}
+	}
+	lines = append(lines, "", dimStyle.Render("Recently synced"))
+	for _, entry := range projection.TrackedQuizzes {
+		stamp := dashboardTimeLabel(entry.LastImportedAt)
+		if entry.LastImportedAt.IsZero() {
+			stamp = "not imported yet"
+		}
+		lines = append(lines, fmt.Sprintf("%s  •  %s", dashboardTrackedLabel(entry), stamp))
+	}
+	return lines
+}
+
+func buildDashboardRecentQuizLines(entries []quizDashboardQuizDoc, tracked []quizDashboardTrackedEntry) []string {
+	if len(entries) == 0 {
+		return []string{dimStyle.Render("No saved quiz files yet.")}
+	}
+	trackedByPath := make(map[string]quizDashboardTrackedEntry, len(tracked))
+	for _, entry := range tracked {
+		trackedByPath[dashboardNormalizePath(entry.Path)] = entry
+	}
+	lines := make([]string, 0, len(entries)*2)
+	for _, entry := range entries {
+		trackedNote := dimStyle.Render("not tracked")
+		if record, ok := trackedByPath[dashboardNormalizePath(entry.Path)]; ok {
+			if record.LastImportedAt.IsZero() {
+				trackedNote = warnStyle.Render("pending sync")
+			} else {
+				trackedNote = successStyle.Render("synced")
+			}
+		}
+		lines = append(lines,
+			fmt.Sprintf("%s  •  %d question(s)  •  %s", emptyFallback(entry.Title, entry.ID), entry.QuestionCount, trackedNote),
+			dimStyle.Render(fmt.Sprintf("%s  •  %s", entry.Class, dashboardTimeLabel(entry.GeneratedAt))),
+		)
+	}
+	return lines
+}
+
+func buildDashboardComponentLines(entries []quizDashboardComponentEntry, includeMetrics bool) []string {
+	if len(entries) == 0 {
+		return []string{dimStyle.Render("None")}
+	}
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		line := dashboardComponentSummary(entry)
+		if includeMetrics {
+			line += dimStyle.Render("  •  ") + dashboardMetricsLabel(entry.Metrics)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func dashboardOverviewSummary(summary quizDashboardSummary) string {
+	if summary.TotalAttempts == 0 {
+		return "No attempts yet"
+	}
+	return fmt.Sprintf("%d answered  •  %.0f%% accuracy", summary.TotalAttempts, summary.Accuracy*100)
+}
+
+func dashboardTruncateLines(lines []string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			trimmed = append(trimmed, "")
+			continue
+		}
+		trimmed = append(trimmed, truncateWidth(line, width))
+	}
+	return trimmed
+}
+
+func quizDashboardDetailMaxScrollFor(section quizDashboardSectionView, width, height int) int {
+	layout := quizDashboardLayoutFor(width, height, 2)
+	style := knowledgePaneBorderStyle(false)
+	innerWidth := max(20, layout.rightWidth-style.GetHorizontalFrameSize())
+	contentHeight := max(3, layout.rightHeight-style.GetVerticalFrameSize())
+	innerHeight := max(1, contentHeight-2)
+	lines := dashboardTruncateLines(section.Lines, innerWidth)
+	if len(lines) <= innerHeight {
+		return 0
+	}
+	return len(lines) - innerHeight
+}
+
+func quizDashboardLayoutFor(width, height, metaHeight int) quizDashboardLayout {
+	if width <= 0 || height <= 0 {
+		return quizDashboardLayout{}
+	}
+
+	paneHeight := max(8, height-metaHeight-1)
+	leftWidth := clamp(width/3, 22, max(22, width-32-1))
+	rightWidth := width - leftWidth - 1
+	canSplit := width >= 68 && rightWidth >= 32
+	if canSplit {
+		return quizDashboardLayout{
+			leftWidth:   leftWidth,
+			rightWidth:  rightWidth,
+			leftHeight:  paneHeight,
+			rightHeight: paneHeight,
+		}
+	}
+
+	leftHeight := max(6, paneHeight/3)
+	rightHeight := max(6, paneHeight-leftHeight)
+	if leftHeight+rightHeight > paneHeight {
+		rightHeight = paneHeight - leftHeight
+	}
+	if rightHeight < 6 {
+		rightHeight = 6
+		leftHeight = max(6, paneHeight-rightHeight)
+	}
+
+	return quizDashboardLayout{
+		stacked:     true,
+		leftWidth:   width,
+		rightWidth:  width,
+		leftHeight:  leftHeight,
+		rightHeight: rightHeight,
+	}
+}
+
+func (p quizDashboardPane) label() string {
+	if p == quizDashboardPaneDetails {
+		return "details"
+	}
+	return "sections"
 }
 
 func buildQuizDashboardProjection(snapshot *quizDashboardSnapshot, selectedClass string) quizDashboardProjection {
@@ -465,127 +938,6 @@ func dashboardLastIncorrectQuestion(history []state.QuestionHistoryEntry) string
 		}
 	}
 	return ""
-}
-
-func renderDashboardOverview(summary quizDashboardSummary) string {
-	accuracy := "-"
-	if summary.TotalAttempts > 0 {
-		accuracy = fmt.Sprintf("%.0f%%", summary.Accuracy*100)
-	}
-	return strings.Join([]string{
-		fmt.Sprintf("%s %d/%d", labelStyle.Render("Components hit:"), summary.ComponentsHit, summary.TotalComponents),
-		fmt.Sprintf("%s %d/%d", labelStyle.Render("Sections hit:"), summary.SectionsHit, summary.TotalSections),
-		fmt.Sprintf("%s %d", labelStyle.Render("Questions answered:"), summary.TotalAttempts),
-		fmt.Sprintf("%s %d (%s)", labelStyle.Render("Correct answers:"), summary.CorrectAnswers, accuracy),
-		fmt.Sprintf("%s %d  •  %s %d synced / %d pending", labelStyle.Render("Saved quizzes:"), summary.SavedQuizzes, labelStyle.Render("Tracked:"), summary.TrackedSynced, summary.TrackedPending),
-		fmt.Sprintf("%s %s  •  %s %s", labelStyle.Render("Latest attempt:"), dashboardTimeLabel(summary.LatestAttempt), labelStyle.Render("Latest quiz:"), dashboardTimeLabel(summary.LatestQuiz)),
-	}, "\n")
-}
-
-func renderDashboardCoverage(projection quizDashboardProjection, limit int) string {
-	recentlyHit := renderDashboardComponentList(projection.RecentlyHit, limit, true)
-	untouched := renderDashboardComponentList(projection.Untouched, limit, false)
-	return strings.Join([]string{
-		fmt.Sprintf("%s %d  •  %s %d", labelStyle.Render("Recently hit:"), min(limit, len(projection.RecentlyHit)), labelStyle.Render("Untouched:"), len(projection.Untouched)),
-		"",
-		dimStyle.Render("Recent coverage"),
-		recentlyHit,
-		"",
-		dimStyle.Render("Still untouched"),
-		untouched,
-	}, "\n")
-}
-
-func renderDashboardStruggling(entries []quizDashboardComponentEntry, limit int) string {
-	if len(entries) == 0 {
-		return dimStyle.Render("No struggling components yet. Wrong answers will surface here after synced attempts.")
-	}
-	lines := make([]string, 0, limit*2)
-	for _, entry := range entries[:min(limit, len(entries))] {
-		title := dashboardComponentSummary(entry)
-		meta := fmt.Sprintf("%s  •  %d wrong  •  streak %d  •  last %s", dashboardMetricsLabel(entry.Metrics), entry.Metrics.Incorrect, entry.IncorrectStreak, dashboardTimeLabel(entry.Metrics.LastAnswered))
-		lines = append(lines, title)
-		if entry.LastIncorrect != "" {
-			lines = append(lines, dimStyle.Render("  last miss: ")+truncateWidth(entry.LastIncorrect, 80))
-		} else {
-			lines = append(lines, dimStyle.Render("  ")+meta)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderDashboardRecentQuestions(entries []quizDashboardQuestionEntry, limit int) string {
-	if len(entries) == 0 {
-		return dimStyle.Render("No answered questions recorded yet.")
-	}
-	lines := make([]string, 0, limit*2)
-	for _, entry := range entries[:min(limit, len(entries))] {
-		status := successStyle.Render("correct")
-		if !entry.Correct {
-			status = errorStyle.Render("wrong")
-		}
-		headline := fmt.Sprintf("%s  %s  •  %s", dashboardTimeLabel(entry.AnsweredAt), status, emptyFallback(entry.ComponentLabel, emptyFallback(entry.SectionTitle, emptyFallback(entry.Class, "unknown"))))
-		lines = append(lines, headline)
-		lines = append(lines, truncateWidth(entry.Question, 80))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderDashboardTracked(projection quizDashboardProjection, limit int) string {
-	if len(projection.TrackedQuizzes) == 0 {
-		return dimStyle.Render("No tracked quizzes registered yet.")
-	}
-	lines := []string{
-		fmt.Sprintf("%s %d  •  %s %d  •  %s %s", labelStyle.Render("Registered:"), projection.Summary.TrackedQuizzes, labelStyle.Render("Pending:"), projection.Summary.TrackedPending, labelStyle.Render("Latest sync:"), dashboardTimeLabel(projection.Summary.LatestTrackedSync)),
-	}
-	if len(projection.PendingTracked) > 0 {
-		lines = append(lines, "", dimStyle.Render("Pending import"))
-		for _, entry := range projection.PendingTracked[:min(limit, len(projection.PendingTracked))] {
-			lines = append(lines, truncateWidth(fmt.Sprintf("%s  •  %s", dashboardTrackedLabel(entry), dashboardTimeLabel(entry.RegisteredAt)), 80))
-		}
-		return strings.Join(lines, "\n")
-	}
-	lines = append(lines, "", dimStyle.Render("Recently synced"))
-	for _, entry := range projection.TrackedQuizzes[:min(limit, len(projection.TrackedQuizzes))] {
-		lines = append(lines, truncateWidth(fmt.Sprintf("%s  •  %s", dashboardTrackedLabel(entry), dashboardTimeLabel(entry.LastImportedAt)), 80))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderDashboardRecentQuizzes(entries []quizDashboardQuizDoc, tracked []quizDashboardTrackedEntry, limit int) string {
-	trackedByPath := make(map[string]quizDashboardTrackedEntry, len(tracked))
-	for _, entry := range tracked {
-		trackedByPath[dashboardNormalizePath(entry.Path)] = entry
-	}
-	lines := make([]string, 0, limit*2)
-	for _, entry := range entries[:min(limit, len(entries))] {
-		trackedNote := dimStyle.Render("not tracked")
-		if record, ok := trackedByPath[dashboardNormalizePath(entry.Path)]; ok {
-			if record.LastImportedAt.IsZero() {
-				trackedNote = warnStyle.Render("pending sync")
-			} else {
-				trackedNote = successStyle.Render("synced")
-			}
-		}
-		lines = append(lines, truncateWidth(fmt.Sprintf("%s  •  %d question(s)  •  %s", emptyFallback(entry.Title, entry.ID), entry.QuestionCount, trackedNote), 80))
-		lines = append(lines, dimStyle.Render(truncateWidth(fmt.Sprintf("%s  •  %s", entry.Class, dashboardTimeLabel(entry.GeneratedAt)), 80)))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderDashboardComponentList(entries []quizDashboardComponentEntry, limit int, includeMetrics bool) string {
-	if len(entries) == 0 {
-		return dimStyle.Render("None")
-	}
-	lines := make([]string, 0, limit)
-	for _, entry := range entries[:min(limit, len(entries))] {
-		line := dashboardComponentSummary(entry)
-		if includeMetrics {
-			line += dimStyle.Render("  •  ") + dashboardMetricsLabel(entry.Metrics)
-		}
-		lines = append(lines, truncateWidth(line, 80))
-	}
-	return strings.Join(lines, "\n")
 }
 
 func dashboardComponentSummary(entry quizDashboardComponentEntry) string {

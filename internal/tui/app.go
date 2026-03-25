@@ -129,7 +129,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case quizDashboardLoadedMsg:
 		var status string
-		m.sfq, status = m.sfq.receive(msg.snapshot, msg.err)
+		m.quizDashboard, status = m.quizDashboard.receive(msg.snapshot, msg.err)
 		if status != "" {
 			m.status = status
 		}
@@ -142,8 +142,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "Tracked sync complete: imported " + strconv.Itoa(msg.report.ImportedSessions) + ", pending " + strconv.Itoa(msg.report.PendingQuizzes)
-		if m.activeTab == tabSFQ {
-			m.sfq = m.sfq.startLoading()
+		if m.activeTab == tabQuizDashboard {
+			m.quizDashboard = m.quizDashboard.startLoading()
 			return m, loadQuizDashboardCmd()
 		}
 		return m, nil
@@ -176,8 +176,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = "Loading knowledge..."
 					return m, loadKnowledgeCmd()
 				}
-				if m.activeTab == tabSFQ {
-					m.sfq = m.sfq.startLoading()
+				if m.activeTab == tabQuizDashboard {
+					m.quizDashboard = m.quizDashboard.startLoading()
 					m.status = "Loading quiz dashboard..."
 					return m, loadQuizDashboardCmd()
 				}
@@ -200,8 +200,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = "Loading knowledge..."
 					return m, loadKnowledgeCmd()
 				}
-				if m.activeTab == tabSFQ {
-					m.sfq = m.sfq.startLoading()
+				if m.activeTab == tabQuizDashboard {
+					m.quizDashboard = m.quizDashboard.startLoading()
 					m.status = "Loading quiz dashboard..."
 					return m, loadQuizDashboardCmd()
 				}
@@ -267,11 +267,11 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case tabSFQ:
+	case tabQuizDashboard:
 		var status string
 		var cmd tea.Cmd
 		var busy bool
-		m.sfq, status, cmd, busy = m.sfq.update(msg)
+		m.quizDashboard, status, cmd, busy = m.quizDashboard.update(msg)
 		if status != "" {
 			m.status = status
 		}
@@ -311,9 +311,9 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 			m.classes = m.classes.EnterAddContextMode()
 			m.status = "Enter context file path, then press Enter"
 		}
-	case "sfq-search":
-		m.activeTab = tabSFQ
-		m.sfq = m.sfq.startLoading()
+	case "quiz-dashboard":
+		m.activeTab = tabQuizDashboard
+		m.quizDashboard = m.quizDashboard.startLoading()
 		m.status = "Loading quiz dashboard..."
 		return m, loadQuizDashboardCmd()
 	case "sync-tracked":
@@ -415,8 +415,8 @@ func (m model) View() string {
 		body = m.knowledge.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
 	case tabSettings:
 		body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
-	case tabSFQ:
-		body = m.sfq.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
+	case tabQuizDashboard:
+		body = m.quizDashboard.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
 	case tabUsage:
 		body = m.usage.view(bodyInnerWidth, bodyHeight, m.cfg)
 	}
