@@ -17,14 +17,6 @@ type aiStreamMsg struct {
 	done        bool
 }
 
-// sfqDoneMsg carries the result of an SFQ plugin search.
-// autoSFQ is true when this was a background lookup triggered from the chat tab.
-type sfqDoneMsg struct {
-	text    string
-	err     error
-	autoSFQ bool
-}
-
 // workflowDoneMsg signals that an ingest / generate / adapt operation finished.
 type workflowDoneMsg struct {
 	summary string
@@ -49,6 +41,12 @@ type knowledgeLoadedMsg struct {
 	sections   *state.SectionIndex
 	components *state.ComponentIndex
 	err        error
+}
+
+// quizDashboardLoadedMsg carries quiz dashboard data for the dashboard tab.
+type quizDashboardLoadedMsg struct {
+	snapshot *quizDashboardSnapshot
+	err      error
 }
 
 // trackedSyncDoneMsg carries completion status for manual/automatic tracked-session sync.

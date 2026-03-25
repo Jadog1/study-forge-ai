@@ -95,27 +95,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done {
 			m.busy = false
 			m.status = "Ready"
-			if m.chat.autoSFQ && m.cfg.SFQ.Command != "" {
-				return m, runSFQCmd(m.cfg.SFQ.Command, m.chat.lastUserPrompt(), true)
-			}
 			return m, nil
 		}
 		return m, waitForAIStreamCmd(msg.stream)
-
-	case sfqDoneMsg:
-		if msg.autoSFQ {
-			// Auto-SFQ results always go to the chat tab.
-			if msg.err == nil && strings.TrimSpace(msg.text) != "" {
-				m.chat = m.chat.setAutoSFQResult(msg.text)
-			}
-			return m, nil
-		}
-		// Manual SFQ results go to the SFQ tab.
-		var status string
-		m.sfq, status = m.sfq.receiveResult(msg.text, msg.err)
-		m.busy = false
-		m.status = status
-		return m, nil
 
 	case workflowDoneMsg:
 		// Handled by workflow overlay above; this catches any that arrive late.
@@ -145,6 +127,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case quizDashboardLoadedMsg:
+		var status string
+		m.sfq, status = m.sfq.receive(msg.snapshot, msg.err)
+		if status != "" {
+			m.status = status
+		}
+		return m, nil
+
 	case trackedSyncDoneMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -152,6 +142,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "Tracked sync complete: imported " + strconv.Itoa(msg.report.ImportedSessions) + ", pending " + strconv.Itoa(msg.report.PendingQuizzes)
+		if m.activeTab == tabSFQ {
+			m.sfq = m.sfq.startLoading()
+			return m, loadQuizDashboardCmd()
+		}
 		return m, nil
 	}
 
@@ -182,6 +176,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = "Loading knowledge..."
 					return m, loadKnowledgeCmd()
 				}
+				if m.activeTab == tabSFQ {
+					m.sfq = m.sfq.startLoading()
+					m.status = "Loading quiz dashboard..."
+					return m, loadQuizDashboardCmd()
+				}
 				if m.activeTab == tabUsage && !m.usage.loaded && !m.usage.loading {
 					m.usage = m.usage.startLoading()
 					m.status = "Loading usage..."
@@ -200,6 +199,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.knowledge = m.knowledge.startLoading()
 					m.status = "Loading knowledge..."
 					return m, loadKnowledgeCmd()
+				}
+				if m.activeTab == tabSFQ {
+					m.sfq = m.sfq.startLoading()
+					m.status = "Loading quiz dashboard..."
+					return m, loadQuizDashboardCmd()
 				}
 				if m.activeTab == tabUsage && !m.usage.loaded && !m.usage.loading {
 					m.usage = m.usage.startLoading()
@@ -266,11 +270,12 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tabSFQ:
 		var status string
 		var cmd tea.Cmd
-		m.sfq, status, cmd = m.sfq.updateInput(msg, m.cfg.SFQ.Command, m.busy)
+		var busy bool
+		m.sfq, status, cmd, busy = m.sfq.update(msg)
 		if status != "" {
-			m.busy = true
 			m.status = status
 		}
+		m.busy = busy
 		return m, cmd
 
 	case tabUsage:
@@ -308,7 +313,9 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		}
 	case "sfq-search":
 		m.activeTab = tabSFQ
-		m.status = "SFQ Search"
+		m.sfq = m.sfq.startLoading()
+		m.status = "Loading quiz dashboard..."
+		return m, loadQuizDashboardCmd()
 	case "sync-tracked":
 		m.busy = true
 		m.status = "Syncing tracked quiz sessions..."
@@ -318,13 +325,6 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		m.usage = m.usage.startLoading()
 		m.status = "Loading usage..."
 		return m, loadUsageCmd(m.cfg)
-	case "toggle-auto-sfq":
-		m.chat = m.chat.toggleAutoSFQ()
-		if m.chat.autoSFQ {
-			m.status = "Auto-SFQ enabled"
-		} else {
-			m.status = "Auto-SFQ disabled"
-		}
 	case "settings":
 		m.activeTab = tabSettings
 		m.settings = m.settings.onTabEnter()
@@ -416,7 +416,7 @@ func (m model) View() string {
 	case tabSettings:
 		body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
 	case tabSFQ:
-		body = m.sfq.view(bodyInnerWidth, bodyHeight)
+		body = m.sfq.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
 	case tabUsage:
 		body = m.usage.view(bodyInnerWidth, bodyHeight, m.cfg)
 	}
@@ -468,10 +468,10 @@ func renderTabParts(labels []string, activeTab int) []string {
 
 func adaptiveTabLabels(availableWidth, activeTab int) ([]string, bool) {
 	labelSets := [][]string{
-		{"Chat", "Classes", "Knowledge", "Settings", "SFQ Search", "Usage"},
-		{"Chat", "Classes", "Knowledge", "Settings", "SFQ", "Usage"},
-		{"Chat", "Class", "Know", "Settings", "SFQ", "Usage"},
-		{"Chat", "Class", "Know", "Set", "SFQ", "Use"},
+		{"Chat", "Classes", "Knowledge", "Settings", "Quiz Dashboard", "Usage"},
+		{"Chat", "Classes", "Knowledge", "Settings", "Quiz Dash", "Usage"},
+		{"Chat", "Class", "Know", "Settings", "Quiz", "Usage"},
+		{"Chat", "Class", "Know", "Set", "Quiz", "Use"},
 	}
 	hint := dimStyle.Render("  Ctrl+P actions")
 

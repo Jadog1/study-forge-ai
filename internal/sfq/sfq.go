@@ -1,4 +1,4 @@
-// Package sfq wraps sfq plugin search so the TUI can run it from one place.
+// Package sfq wraps sfq quiz commands so the app can run them from one place.
 package sfq
 
 import (
@@ -6,23 +6,6 @@ import (
 	"os/exec"
 	"strings"
 )
-
-// Search runs the configured sfq command with search arguments.
-// Example command value: "studyforge sfq".
-func Search(command, query string) (string, error) {
-	parts := strings.Fields(strings.TrimSpace(command))
-	if len(parts) == 0 {
-		return "", fmt.Errorf("sfq command is empty")
-	}
-
-	args := append(parts[1:], "search", query)
-	cmd := exec.Command(parts[0], args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("sfq search failed: %w\n%s", err, string(out))
-	}
-	return string(out), nil
-}
 
 // Generate runs `sfq generate <quizPath>` to produce and open an interactive
 // HTML quiz in the default browser. The sfq binary is always invoked directly.

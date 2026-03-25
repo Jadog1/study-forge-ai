@@ -181,7 +181,6 @@ const availableTools = `Available tools:
 - search_notes: search ingested notes by natural-language query. Arguments: query (string), optional class (string), optional limit (int).
 - search_knowledge: search AI-processed knowledge sections and components by natural-language query. Returns richer extracted knowledge than search_notes. Arguments: query (string), optional class (string), optional kind ("section" or "component", leave empty for both), optional limit (int).
 - get_class_context: fetch the registered class context files for a class. Arguments: optional class (string).
-- sfq_search: run the configured SFQ search command for external related notes. Arguments: query (string).
 - sfq_schema: fetch the quiz YAML schema for strict formatting guidance when generating quizzes. No arguments.
 - generate_quiz: generate and save a new quiz for a class from its ingested notes. Arguments: class (string), optional count (int), optional type (string), optional tags (array of strings), optional directives (array of objects with component_id, optional section_id, optional section_title, optional question_count, optional question_types, optional angle). Use directives when you already chose the exact component(s) and want to bypass the quiz orchestrator.
 - list_classes: list all registered classes. No arguments.
@@ -511,8 +510,6 @@ func describeToolCall(className string, call *toolCall) string {
 			return "Loading class context"
 		}
 		return fmt.Sprintf("Loading class context for %s", targetClass)
-	case "sfq_search":
-		return fmt.Sprintf("Running SFQ search for %q", toolString(call.Arguments, "query"))
 	case "sfq_schema":
 		return "Fetching quiz YAML schema"
 	case "generate_quiz":
@@ -635,22 +632,6 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			return fmt.Sprintf("No class context files registered for %q.", targetClass), nil
 		}
 		return ctxText, nil
-	case "sfq_search":
-		if strings.TrimSpace(cfg.SFQ.Command) == "" {
-			return "", fmt.Errorf("sfq command is not configured")
-		}
-		query := toolString(call.Arguments, "query")
-		if query == "" {
-			return "", fmt.Errorf("query is required")
-		}
-		out, err := sfq.Search(cfg.SFQ.Command, query)
-		if err != nil {
-			return "", err
-		}
-		if len(out) > 6000 {
-			out = out[:6000]
-		}
-		return out, nil
 	case "sfq_schema":
 		return sfq.Schema(cfg.SFQ.Command), nil
 	case "generate_quiz":

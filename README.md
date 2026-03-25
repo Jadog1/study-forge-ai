@@ -141,7 +141,7 @@ local:
   model: llama3
 
 sfq:
-  command: studyforge sfq
+  command: sfq
 
 # Appended verbatim to every AI prompt.
 custom_prompt_context: |

@@ -24,8 +24,6 @@ type ChatTab struct {
 	messages     []ChatMessage
 	input        textinput.Model
 	scrollOffset int // lines from the bottom to scroll up by
-	autoSFQ      bool
-	sfqResult    string // most recent automatic SFQ lookup result
 }
 
 func newChatTab() ChatTab {
@@ -58,7 +56,6 @@ func (c ChatTab) updateInput(msg tea.Msg, busy bool) (ChatTab, string, tea.Cmd) 
 						ChatMessage{Role: "assistant", Content: ""},
 					)
 					c.input.SetValue("")
-					c.sfqResult = ""
 					c.scrollOffset = 0
 					return c, prompt, nil
 				}
@@ -129,28 +126,6 @@ func (c ChatTab) finishAction(label, detail string, err error) ChatTab {
 	return c
 }
 
-// setAutoSFQResult stores the result from a background SFQ lookup.
-func (c ChatTab) setAutoSFQResult(text string) ChatTab {
-	c.sfqResult = text
-	return c
-}
-
-// lastUserPrompt returns the most recent "You: …" message text, stripped of the prefix.
-func (c ChatTab) lastUserPrompt() string {
-	for i := len(c.messages) - 1; i >= 0; i-- {
-		if c.messages[i].Role == "user" {
-			return c.messages[i].Content
-		}
-	}
-	return ""
-}
-
-// toggleAutoSFQ flips the autoSFQ flag.
-func (c ChatTab) toggleAutoSFQ() ChatTab {
-	c.autoSFQ = !c.autoSFQ
-	return c
-}
-
 func (c ChatTab) view(width, height int, providerName string, providerDisabled bool, selectedClass string, busy bool) string {
 	indicator := successStyle.Render("●")
 	pName := providerName
@@ -166,10 +141,6 @@ func (c ChatTab) view(width, height int, providerName string, providerDisabled b
 	if classDisplay == "" {
 		classDisplay = dimStyle.Render("none")
 	}
-	autoLabel := dimStyle.Render("auto-sfq: off")
-	if c.autoSFQ {
-		autoLabel = successStyle.Render("auto-sfq: on")
-	}
 
 	metaBody := lipgloss.NewStyle().Width(width - 6).Render(fmt.Sprintf(
 		"%s %s  %s\nClass: %s",
@@ -178,23 +149,13 @@ func (c ChatTab) view(width, height int, providerName string, providerDisabled b
 		agentState,
 		classDisplay,
 	))
-	metaBody += "\n" + autoLabel
 
-	sfqHeight := 0
-	if c.sfqResult != "" {
-		sfqHeight = 8
-	}
-	chatHeight := clamp(height-sfqHeight-15, 8, height-10)
+	chatHeight := clamp(height-15, 8, height-10)
 	chatPane := c.renderChatPane(width, chatHeight, busy)
 
 	sections := []string{
 		renderSection("Session", metaBody, width),
 		renderSection("Chat", chatPane, width),
-	}
-
-	if c.sfqResult != "" {
-		relatedBody := lipgloss.NewStyle().Width(width - 6).Render(truncate(strings.TrimSpace(c.sfqResult), 400))
-		sections = append(sections, renderSection("Related notes (SFQ)", clipLines(relatedBody, 6), width))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }

@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/studyforge/study-agent/internal/chat"
@@ -69,15 +72,6 @@ func waitForAIStreamCmd(stream <-chan aiStreamEvent) tea.Cmd {
 			err:         event.err,
 			done:        event.done,
 		}
-	}
-}
-
-// runSFQCmd executes the configured sfq plugin search command.
-// When auto is true the result is tagged as a background auto-lookup.
-func runSFQCmd(command, query string, auto bool) tea.Cmd {
-	return func() tea.Msg {
-		out, err := sfq.Search(command, query)
-		return sfqDoneMsg{text: out, err: err, autoSFQ: auto}
 	}
 }
 
@@ -205,6 +199,35 @@ func loadKnowledgeCmd() tea.Cmd {
 	}
 }
 
+// loadQuizDashboardCmd loads persisted quiz, history, and tracked-session data.
+func loadQuizDashboardCmd() tea.Cmd {
+	return func() tea.Msg {
+		sections, sectionErr := state.LoadSectionIndex()
+		if sectionErr != nil {
+			return quizDashboardLoadedMsg{err: sectionErr}
+		}
+		components, componentErr := state.LoadComponentIndex()
+		if componentErr != nil {
+			return quizDashboardLoadedMsg{err: componentErr}
+		}
+		tracked, trackedErr := state.LoadTrackedQuizCache()
+		if trackedErr != nil {
+			return quizDashboardLoadedMsg{err: trackedErr}
+		}
+		quizzes, quizErr := loadDashboardQuizDocs()
+		if quizErr != nil {
+			return quizDashboardLoadedMsg{err: quizErr}
+		}
+		return quizDashboardLoadedMsg{snapshot: &quizDashboardSnapshot{
+			Sections:   sections.Sections,
+			Components: components.Components,
+			Tracked:    tracked,
+			Quizzes:    quizzes,
+			LoadedAt:   time.Now().UTC(),
+		}}
+	}
+}
+
 // syncTrackedSessionsCmd imports unseen tracked sfq sessions into quiz results
 // and section/component history.
 func syncTrackedSessionsCmd() tea.Cmd {
@@ -238,4 +261,49 @@ func ternaryText(condition bool, yes, no string) string {
 		return yes
 	}
 	return no
+}
+
+func loadDashboardQuizDocs() ([]quizDashboardQuizDoc, error) {
+	quizRoot, err := config.Path("quizzes")
+	if err != nil {
+		return nil, err
+	}
+	if _, statErr := os.Stat(quizRoot); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat quiz directory: %w", statErr)
+	}
+
+	var docs []quizDashboardQuizDoc
+	walkErr := filepath.WalkDir(quizRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() || filepath.Ext(d.Name()) != ".yaml" {
+			return nil
+		}
+
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
+		quizDoc, loadErr := quiz.LoadQuiz(path)
+		if loadErr != nil || quizDoc == nil {
+			return nil
+		}
+		docs = append(docs, quizDashboardQuizDoc{
+			ID:            strings.TrimSuffix(filepath.Base(path), ".yaml"),
+			Class:         strings.TrimSpace(quizDoc.Class),
+			Title:         strings.TrimSpace(quizDoc.Title),
+			Path:          path,
+			QuestionCount: len(quizDoc.Sections),
+			GeneratedAt:   info.ModTime().UTC(),
+		})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("walk quiz directory: %w", walkErr)
+	}
+	return docs, nil
 }
