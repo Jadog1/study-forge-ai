@@ -21,6 +21,7 @@ const (
 const knowledgeSectionRowHeight = 2
 const knowledgeSplitMinRightWidth = 24
 const knowledgeSplitMinTotalWidth = 60
+const knowledgeSidebarCompactWidth = 24
 
 type knowledgeQuizMetrics struct {
 	Attempts     int
@@ -264,7 +265,7 @@ func (k KnowledgeTab) view(width, height int, selectedClass string) string {
 	metaLine1 := truncateWidth(fmt.Sprintf("%s %d  %s %d  %s %s", labelStyle.Render("Sections:"), len(k.entries), labelStyle.Render("Components:"), k.totalComponentsCount, labelStyle.Render("Selected class:"), classLabel), width)
 	metaLine2 := truncateWidth(fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), k.activePane.label(), dimStyle.Render("h/l switch pane  •  up/down scroll  •  r refresh")), width)
 	meta := metaLine1 + "\n" + metaLine2
-	layout := knowledgeLayoutFor(width, height, metaHeight)
+	layout := knowledgeLayoutFor(width, height, metaHeight, k.activePane)
 	leftPane := k.renderSectionsPane(layout.leftWidth, layout.leftHeight)
 	rightPane := k.renderComponentsPane(layout.rightWidth, layout.rightHeight)
 
@@ -450,7 +451,7 @@ func (k KnowledgeTab) componentInnerDimensions() (int, int) {
 	if k.width <= 0 || k.height <= 0 {
 		return 0, 0
 	}
-	layout := knowledgeLayoutFor(k.width, k.height, 3)
+	layout := knowledgeLayoutFor(k.width, k.height, 3, k.activePane)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(14, layout.rightWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(2, layout.rightHeight-style.GetVerticalFrameSize())
@@ -462,7 +463,7 @@ func (k KnowledgeTab) sectionInnerDimensions() (int, int) {
 	if k.width <= 0 || k.height <= 0 {
 		return 0, 0
 	}
-	layout := knowledgeLayoutFor(k.width, k.height, 3)
+	layout := knowledgeLayoutFor(k.width, k.height, 3, k.activePane)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(12, layout.leftWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(2, layout.leftHeight-style.GetVerticalFrameSize())
@@ -478,13 +479,16 @@ type knowledgeLayout struct {
 	rightHeight int
 }
 
-func knowledgeLayoutFor(width, height, metaHeight int) knowledgeLayout {
+func knowledgeLayoutFor(width, height, metaHeight int, activePane knowledgePane) knowledgeLayout {
 	if width <= 0 || height <= 0 {
 		return knowledgeLayout{}
 	}
 
 	paneHeight := max(8, height-metaHeight-1)
 	leftWidth := clamp(width/3, 20, max(20, width-knowledgeSplitMinRightWidth-1))
+	if activePane == knowledgePaneComponents {
+		leftWidth = clamp(knowledgeSidebarCompactWidth, 20, max(20, width-knowledgeSplitMinRightWidth-1))
+	}
 	rightWidth := width - leftWidth - 1
 	canSplit := width >= knowledgeSplitMinTotalWidth && rightWidth >= knowledgeSplitMinRightWidth
 	if canSplit {
@@ -606,7 +610,7 @@ func knowledgePaneBorderStyle(active bool) lipgloss.Style {
 		BorderForeground(lipgloss.Color("238")).
 		Padding(0, 1)
 	if active {
-		style = style.BorderForeground(lipgloss.Color("117"))
+		style = style.BorderForeground(lipgloss.Color("244"))
 	}
 	return style
 }
@@ -614,10 +618,10 @@ func knowledgePaneBorderStyle(active bool) lipgloss.Style {
 func knowledgeSectionRowStyle(selected, active bool) lipgloss.Style {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	if selected {
-		style = style.Background(lipgloss.Color("236"))
+		style = style.Background(lipgloss.Color("236")).Foreground(lipgloss.Color("230"))
 	}
 	if selected && active {
-		style = style.Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62"))
+		style = style.Bold(true)
 	}
 	return style
 }

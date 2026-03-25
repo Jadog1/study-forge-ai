@@ -20,6 +20,9 @@ const (
 )
 
 const quizDashboardSectionRowHeight = 2
+const quizDashboardMinSplitWidth = 68
+const quizDashboardMinRightWidth = 32
+const quizDashboardSidebarCompactWidth = 22
 
 // QuizDashboardTab holds state for the quiz dashboard tab.
 type QuizDashboardTab struct {
@@ -256,13 +259,13 @@ func (q QuizDashboardTab) view(width, height int, selectedClass string) string {
 
 	sections := buildQuizDashboardSections(projection)
 	selectedIndex := clamp(q.selectedSection, 0, len(sections)-1)
-	detailScroll := clamp(q.detailScroll, 0, quizDashboardDetailMaxScrollFor(sections[selectedIndex], width, height))
+	detailScroll := clamp(q.detailScroll, 0, quizDashboardDetailMaxScrollFor(sections[selectedIndex], width, height, q.activePane))
 
 	headerLines := []string{
 		truncateWidth(fmt.Sprintf("%s %s  •  %s %s", labelStyle.Render("Class filter:"), projection.ClassLabel, labelStyle.Render("Loaded:"), dashboardTimeLabel(projection.LoadedAt)), width),
 		truncateWidth(fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), q.activePane.label(), dimStyle.Render("h/l switch pane  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  r refresh  •  s sync")), width),
 	}
-	layout := quizDashboardLayoutFor(width, height, len(headerLines))
+	layout := quizDashboardLayoutFor(width, height, len(headerLines), q.activePane)
 	sectionPane := q.renderSectionsPane(sections, layout.leftWidth, layout.leftHeight, selectedIndex)
 	detailPane := q.renderDetailPane(sections[selectedIndex], layout.rightWidth, layout.rightHeight, detailScroll)
 
@@ -339,7 +342,7 @@ func (q QuizDashboardTab) renderDetailPane(section quizDashboardSectionView, wid
 	contentHeight := max(3, height-style.GetVerticalFrameSize())
 	innerHeight := max(1, contentHeight-2)
 
-	lines := dashboardTruncateLines(section.Lines, innerWidth)
+	lines := dashboardWrapLines(section.Lines, innerWidth)
 	if len(lines) == 0 {
 		lines = []string{dimStyle.Render("No details available.")}
 	}
@@ -381,7 +384,7 @@ func (q QuizDashboardTab) sectionViewportHeight() int {
 	if q.width <= 0 || q.height <= 0 {
 		return 1
 	}
-	layout := quizDashboardLayoutFor(q.width, q.height, 2)
+	layout := quizDashboardLayoutFor(q.width, q.height, 2, q.activePane)
 	style := knowledgePaneBorderStyle(false)
 	contentHeight := max(3, layout.leftHeight-style.GetVerticalFrameSize())
 	return max(1, contentHeight-2)
@@ -399,7 +402,7 @@ func (q QuizDashboardTab) detailInnerDimensions() (int, int) {
 	if q.width <= 0 || q.height <= 0 {
 		return 0, 0
 	}
-	layout := quizDashboardLayoutFor(q.width, q.height, 2)
+	layout := quizDashboardLayoutFor(q.width, q.height, 2, q.activePane)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(20, layout.rightWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(3, layout.rightHeight-style.GetVerticalFrameSize())
@@ -414,11 +417,11 @@ func (q QuizDashboardTab) detailMaxScroll() int {
 		return 0
 	}
 	selectedIndex := clamp(q.selectedSection, 0, len(sections)-1)
-	_, innerHeight := q.detailInnerDimensions()
+	innerWidth, innerHeight := q.detailInnerDimensions()
 	if innerHeight <= 0 {
 		return 0
 	}
-	lines := sections[selectedIndex].Lines
+	lines := dashboardWrapLines(sections[selectedIndex].Lines, innerWidth)
 	if len(lines) <= innerHeight {
 		return 0
 	}
@@ -595,6 +598,23 @@ func dashboardOverviewSummary(summary quizDashboardSummary) string {
 	return fmt.Sprintf("%d answered  •  %.0f%% accuracy", summary.TotalAttempts, summary.Accuracy*100)
 }
 
+func dashboardWrapLines(lines []string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	wrapper := lipgloss.NewStyle().Width(width).MaxWidth(width)
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		rendered := wrapper.Render(line)
+		wrapped = append(wrapped, strings.Split(strings.ReplaceAll(rendered, "\r\n", "\n"), "\n")...)
+	}
+	return wrapped
+}
+
 func dashboardTruncateLines(lines []string, width int) []string {
 	if width <= 0 {
 		return nil
@@ -610,28 +630,31 @@ func dashboardTruncateLines(lines []string, width int) []string {
 	return trimmed
 }
 
-func quizDashboardDetailMaxScrollFor(section quizDashboardSectionView, width, height int) int {
-	layout := quizDashboardLayoutFor(width, height, 2)
+func quizDashboardDetailMaxScrollFor(section quizDashboardSectionView, width, height int, activePane quizDashboardPane) int {
+	layout := quizDashboardLayoutFor(width, height, 2, activePane)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(20, layout.rightWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(3, layout.rightHeight-style.GetVerticalFrameSize())
 	innerHeight := max(1, contentHeight-2)
-	lines := dashboardTruncateLines(section.Lines, innerWidth)
+	lines := dashboardWrapLines(section.Lines, innerWidth)
 	if len(lines) <= innerHeight {
 		return 0
 	}
 	return len(lines) - innerHeight
 }
 
-func quizDashboardLayoutFor(width, height, metaHeight int) quizDashboardLayout {
+func quizDashboardLayoutFor(width, height, metaHeight int, activePane quizDashboardPane) quizDashboardLayout {
 	if width <= 0 || height <= 0 {
 		return quizDashboardLayout{}
 	}
 
 	paneHeight := max(8, height-metaHeight-1)
-	leftWidth := clamp(width/3, 22, max(22, width-32-1))
+	leftWidth := clamp(width/3, 22, max(22, width-quizDashboardMinRightWidth-1))
+	if activePane == quizDashboardPaneDetails {
+		leftWidth = clamp(quizDashboardSidebarCompactWidth, 22, max(22, width-quizDashboardMinRightWidth-1))
+	}
 	rightWidth := width - leftWidth - 1
-	canSplit := width >= 68 && rightWidth >= 32
+	canSplit := width >= quizDashboardMinSplitWidth && rightWidth >= quizDashboardMinRightWidth
 	if canSplit {
 		return quizDashboardLayout{
 			leftWidth:   leftWidth,
