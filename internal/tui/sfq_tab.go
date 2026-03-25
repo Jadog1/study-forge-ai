@@ -17,6 +17,7 @@ type SFQTab struct {
 func newSFQTab() SFQTab {
 	input := textinput.New()
 	input.Placeholder = "search term"
+	input.Focus()
 	input.CharLimit = 400
 	return SFQTab{input: input}
 }
@@ -34,6 +35,9 @@ func (s SFQTab) updateInput(msg tea.Msg, sfqCommand string, busy bool) (SFQTab, 
 		q := strings.TrimSpace(s.input.Value())
 		if q == "" {
 			return s, "", nil
+		}
+		if strings.TrimSpace(sfqCommand) == "" {
+			return s, "Set sfq.command in Settings before searching", nil
 		}
 		return s, "Running sfq search…", runSFQCmd(sfqCommand, q, false)
 	}
