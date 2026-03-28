@@ -86,8 +86,13 @@ func SyncTrackedQuizSessions() (SyncReport, error) {
 				continue
 			}
 			if len(details.Answers) == 0 {
-				// Session exists but no submitted answers yet; keep it pending.
-				continue
+				// If neither the results payload nor the history record carries a
+				// completion timestamp, the session is still in-progress — leave pending.
+				if details.CompletedAt.IsZero() && session.CompletedAt.IsZero() {
+					continue
+				}
+				// Session is complete but all questions were skipped. Fall through
+				// and import with empty results so it no longer shows as pending.
 			}
 
 			attemptID := record.QuizID + "-" + details.SessionID

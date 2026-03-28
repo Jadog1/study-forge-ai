@@ -10,11 +10,11 @@ import (
 
 const (
 	tabChat = iota
-	tabClasses
 	tabKnowledge
-	tabSettings
 	tabQuizDashboard
+	tabClasses
 	tabUsage
+	tabSettings
 	tabCount
 )
 

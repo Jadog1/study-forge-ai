@@ -468,10 +468,10 @@ func renderTabParts(labels []string, activeTab int) []string {
 
 func adaptiveTabLabels(availableWidth, activeTab int) ([]string, bool) {
 	labelSets := [][]string{
-		{"Chat", "Classes", "Knowledge", "Settings", "Quiz Dashboard", "Usage"},
-		{"Chat", "Classes", "Knowledge", "Settings", "Quiz Dash", "Usage"},
-		{"Chat", "Class", "Know", "Settings", "Quiz", "Usage"},
-		{"Chat", "Class", "Know", "Set", "Quiz", "Use"},
+		{"Chat", "Knowledge", "Quiz Dashboard", "Classes", "Usage", "Settings"},
+		{"Chat", "Knowledge", "Quiz Dash", "Classes", "Usage", "Settings"},
+		{"Chat", "Know", "Quiz", "Class", "Usage", "Settings"},
+		{"Chat", "Know", "Quiz", "Class", "Use", "Set"},
 	}
 	hint := dimStyle.Render("  Ctrl+P actions")
 
