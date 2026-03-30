@@ -46,14 +46,14 @@ type WorkflowModel struct {
 	visible bool
 
 	// Input fields shared or used per workflow kind.
-	pathInput  textinput.Model // folder path (ingest only)
-	classInput textinput.Model // class name (ingest/generate)
-	countInput textinput.Model // quiz question count (generate)
-	assessmentOptions []string // quiz/exam context profile options
+	pathInput         textinput.Model // folder path (ingest only)
+	classInput        textinput.Model // class name (ingest/generate)
+	countInput        textinput.Model // quiz question count (generate)
+	assessmentOptions []string        // quiz/exam context profile options
 	assessmentIdx     int
 	questionTypeOpts  []string // context-default + supported sfq types
 	questionTypeIdx   int
-	fieldIdx   int             // focused field index for current workflow kind
+	fieldIdx          int // focused field index for current workflow kind
 
 	// Ingest-specific options.
 	cleanBeforeIngest bool // if true, delete all previous ingestion data before starting

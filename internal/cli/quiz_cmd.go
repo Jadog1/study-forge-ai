@@ -15,10 +15,10 @@ import (
 )
 
 var (
-	quizCount int
+	quizCount      int
 	quizAssessment string
-	quizType  string
-	quizTags  []string
+	quizType       string
+	quizTags       []string
 )
 
 var quizCmd = &cobra.Command{

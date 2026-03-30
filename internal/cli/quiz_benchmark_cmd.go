@@ -19,21 +19,21 @@ import (
 )
 
 var (
-	quizBenchmarkModels []string
-	quizBenchmarkRuns   int
-	quizBenchmarkCount  int
+	quizBenchmarkModels     []string
+	quizBenchmarkRuns       int
+	quizBenchmarkCount      int
 	quizBenchmarkAssessment string
-	quizBenchmarkType   string
-	quizBenchmarkTags   []string
-	quizBenchmarkKeep   bool
-	quizBenchmarkOut    string
+	quizBenchmarkType       string
+	quizBenchmarkTags       []string
+	quizBenchmarkKeep       bool
+	quizBenchmarkOut        string
 )
 
 var quizBenchmarkCmd = &cobra.Command{
 	Use:   "quiz-benchmark <class>",
 	Short: "Benchmark quiz generation across Claude models",
-	Long: "Run repeated quiz generations across multiple Claude models and compare success rate,\nlatency, retries, question-count compliance, and estimated token cost.",
-	Args: cobra.ExactArgs(1),
+	Long:  "Run repeated quiz generations across multiple Claude models and compare success rate,\nlatency, retries, question-count compliance, and estimated token cost.",
+	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		class := strings.TrimSpace(args[0])
 		if class == "" {
@@ -101,23 +101,23 @@ var quizBenchmarkCmd = &cobra.Command{
 				duration := time.Since(started)
 
 				runResult := benchmarkRunResult{
-					Model:              model,
-					RunNumber:          runNum,
-					DurationMS:         duration.Milliseconds(),
-					Success:            runErr == nil,
-					Error:              errString(runErr),
-					ProgressErrors:     progressErrors,
-					ProviderCalls:      telemetry.totalCalls,
-					OrchestratorCalls:  telemetry.orchestratorCalls,
-					ComponentCalls:     telemetry.componentCalls,
+					Model:               model,
+					RunNumber:           runNum,
+					DurationMS:          duration.Milliseconds(),
+					Success:             runErr == nil,
+					Error:               errString(runErr),
+					ProgressErrors:      progressErrors,
+					ProviderCalls:       telemetry.totalCalls,
+					OrchestratorCalls:   telemetry.orchestratorCalls,
+					ComponentCalls:      telemetry.componentCalls,
 					OrchestratorRetries: maxInt(0, telemetry.orchestratorCalls-1),
-					ComponentRetries:   telemetry.componentRetries(),
-					InputTokens:        telemetry.inputTokens,
-					OutputTokens:       telemetry.outputTokens,
-					TotalTokens:        telemetry.inputTokens + telemetry.outputTokens,
-					EstimatedCostUSD:   telemetry.costUSD,
-					QuizPath:           quizPath,
-					RecordedAt:         time.Now().UTC(),
+					ComponentRetries:    telemetry.componentRetries(),
+					InputTokens:         telemetry.inputTokens,
+					OutputTokens:        telemetry.outputTokens,
+					TotalTokens:         telemetry.inputTokens + telemetry.outputTokens,
+					EstimatedCostUSD:    telemetry.costUSD,
+					QuizPath:            quizPath,
+					RecordedAt:          time.Now().UTC(),
 				}
 
 				if q != nil {
