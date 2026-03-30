@@ -81,6 +81,8 @@ type RecentQuestionEntry struct {
 // ComponentQuestionContext is everything a component question agent needs to
 // generate questions for one specific knowledge component.
 type ComponentQuestionContext struct {
+	AssessmentKind   string
+	ClassContext     string
 	Class            string
 	SectionID        string
 	SectionTitle     string
@@ -99,12 +101,20 @@ type ComponentQuestionContext struct {
 // OrchestratorPrompt builds the prompt sent to the orchestrator LLM agent.
 // The agent must return a JSON array of directives that assign question counts
 // and types to specific components.
-func OrchestratorPrompt(class string, candidates []OrchestratorCandidate, totalCount int, typePreference, customContext string) string {
+func OrchestratorPrompt(class, assessmentKind, classContext string, candidates []OrchestratorCandidate, totalCount int, typePreference, customContext string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are the quiz orchestrator for class: %s.\n", class)
+	if strings.TrimSpace(assessmentKind) != "" {
+		fmt.Fprintf(&b, "Assessment mode: %s\n", assessmentKind)
+	}
 	fmt.Fprintf(&b, "You must allocate exactly %d questions across the following knowledge components.\n\n", totalCount)
 	fmt.Fprintf(&b, "Default question type: %s\n", typePreference)
 	b.WriteString("Supported types: multiple-choice, multi-select, true-false, multi-true-false, short-answer, ordering\n\n")
+	if strings.TrimSpace(classContext) != "" {
+		b.WriteString("Class assessment context:\n")
+		b.WriteString(classContext)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("Rules:\n")
 	b.WriteString("- Prioritise components with high scores (weak, novel, or not seen recently).\n")
 	b.WriteString("- Use difficulty_band and recent_accuracy to tune challenge per component:\n")
@@ -192,6 +202,9 @@ func OrchestratorPrompt(class string, candidates []OrchestratorCandidate, totalC
 func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are a question writer for class: %s\n", ctx.Class)
+	if strings.TrimSpace(ctx.AssessmentKind) != "" {
+		fmt.Fprintf(&b, "Assessment mode: %s\n", ctx.AssessmentKind)
+	}
 	fmt.Fprintf(&b, "Section: %q (id: %s)\n", ctx.SectionTitle, ctx.SectionID)
 	if ctx.SectionSummary != "" {
 		fmt.Fprintf(&b, "Section summary: %s\n", ctx.SectionSummary)
@@ -209,6 +222,11 @@ func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string)
 	}
 	if ctx.DifficultyGuide != "" {
 		fmt.Fprintf(&b, "Difficulty guidance: %s\n", ctx.DifficultyGuide)
+	}
+	if strings.TrimSpace(ctx.ClassContext) != "" {
+		b.WriteString("\nClass assessment context:\n")
+		b.WriteString(ctx.ClassContext)
+		b.WriteString("\n")
 	}
 	if len(ctx.RecentHistory) > 0 {
 		b.WriteString("\nRecent questions on this component (avoid repetition):\n")

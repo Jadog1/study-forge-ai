@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
@@ -42,10 +43,13 @@ type ProgressEvent struct {
 
 // QuizOptions parameterises the adaptive quiz generator.
 type QuizOptions struct {
+	// AssessmentKind selects which context profile to use (e.g. quiz/exam).
+	// Unknown values are normalized to "quiz".
+	AssessmentKind string
 	// Count is the target number of questions.  Defaults to 10 when zero.
 	Count int
 	// TypePreference is the preferred sfq question type (e.g. "multiple-choice").
-	// Defaults to "multiple-choice" when empty.
+	// Use "context-default" (or empty) to resolve from class profile context.
 	TypePreference string
 	// Tags, when non-empty, restrict scoring to components whose section tags
 	// contain at least one matching tag.
@@ -82,10 +86,23 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		QuestionKeys:      make(map[string]bool),
 	}
 
-	opts.TypePreference = strings.TrimSpace(opts.TypePreference)
-	if opts.TypePreference == "" {
-		opts.TypePreference = "multiple-choice"
+	assessmentKind := classpkg.NormalizeContextProfile(opts.AssessmentKind)
+	profileDefaultType := classpkg.ResolveProfileDefaultQuestionType(class, assessmentKind, "multiple-choice")
+	profileDefaultType = sfq.NormalizeQuestionType(profileDefaultType, "multiple-choice")
+	if strings.EqualFold(strings.TrimSpace(opts.TypePreference), "context-default") {
+		opts.TypePreference = ""
 	}
+	opts.TypePreference = sfq.NormalizeQuestionType(opts.TypePreference, profileDefaultType)
+	classProfileContext, ctxErr := classpkg.LoadProfileContextText(class, assessmentKind)
+	if ctxErr != nil {
+		if onProgress != nil {
+			onProgress(ProgressEvent{Label: "Load class context", Detail: ctxErr.Error(), Done: true, Err: ctxErr})
+		}
+		classProfileContext = ""
+	} else if onProgress != nil {
+		onProgress(ProgressEvent{Label: "Load class context", Detail: assessmentKind + " profile", Done: true})
+	}
+
 	if opts.Count <= 0 {
 		if len(opts.Directives) > 0 {
 			opts.Count = sumDirectiveQuestionCount(opts.Directives)
@@ -148,7 +165,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		if opts.ProviderOverrides != nil && opts.ProviderOverrides.Orchestrator != nil {
 			orcProvider = opts.ProviderOverrides.Orchestrator
 		}
-		directives, err = runOrchestratorAgent(class, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
+		directives, err = runOrchestratorAgent(class, assessmentKind, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
 		if err != nil {
 			return nil, "", fmt.Errorf("orchestrator: %w", err)
 		}
@@ -200,7 +217,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		if strings.TrimSpace(d.SectionTitle) == "" {
 			d.SectionTitle = cs.Section.Title
 		}
-		sections, agentErr := runComponentQuestionAgent(d, cs, cmpProvider, cfg, onProgress)
+		sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, d, cs, cmpProvider, cfg, onProgress)
 		if agentErr != nil {
 			// Don't fail the whole quiz for one component failure; emit a progress error.
 			if onProgress != nil {
@@ -234,7 +251,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 				QuestionTypes: []string{opts.TypePreference},
 				Angle:         "reinforce understanding",
 			}
-			sections, agentErr := runComponentQuestionAgent(fallbackDir, cs, cmpProvider, cfg, onProgress)
+			sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, fallbackDir, cs, cmpProvider, cfg, onProgress)
 			if agentErr != nil {
 				if onProgress != nil {
 					onProgress(ProgressEvent{Label: "Fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})
@@ -273,7 +290,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 				QuestionTypes: []string{opts.TypePreference},
 				Angle:         "novel scenario with different wording",
 			}
-			sections, agentErr := runComponentQuestionAgent(extraDir, cs, cmpProvider, cfg, onProgress)
+			sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, extraDir, cs, cmpProvider, cfg, onProgress)
 			if agentErr != nil {
 				if onProgress != nil {
 					onProgress(ProgressEvent{Label: "Diversity fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})
@@ -297,13 +314,13 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	deduplicateQuestionIDs(allSections)
 
 	q := &state.Quiz{
-		Title:    fmt.Sprintf("%s Adaptive Quiz", class),
+		Title:    fmt.Sprintf("%s Adaptive %s", class, strings.Title(assessmentKind)),
 		Class:    class,
 		Sections: allSections,
 	}
 	normalizeQuizProvenance(q)
 
-	return saveQuiz(class, "quiz", q)
+	return saveQuiz(class, assessmentKind, q)
 }
 
 func applyDirectiveDifficultyGuidance(directives []OrchestratorDirective, scoreByComponent map[string]ComponentScore) []OrchestratorDirective {

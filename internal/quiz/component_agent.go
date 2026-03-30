@@ -22,13 +22,15 @@ type componentSectionsDoc struct {
 // on an OrchestratorDirective.  It runs an agentic retry loop of up to
 // maxComponentSteps, parsing a YAML list of QuizSection items.
 func runComponentQuestionAgent(
+	assessmentKind string,
+	classContext string,
 	dir OrchestratorDirective,
 	score ComponentScore,
 	provider plugins.AIProvider,
 	cfg *config.Config,
 	onProgress func(ProgressEvent),
 ) ([]state.QuizSection, error) {
-	ctx := buildComponentQuestionContext(dir, score)
+	ctx := buildComponentQuestionContext(assessmentKind, classContext, dir, score)
 	prompt := prompts.ComponentQuestionPrompt(ctx, cfg.CustomPromptContext)
 
 	label := "Questions"
@@ -81,7 +83,7 @@ func runComponentQuestionAgent(
 	return nil, fmt.Errorf("component question agent exceeded max steps for component %q", dir.ComponentID)
 }
 
-func buildComponentQuestionContext(dir OrchestratorDirective, score ComponentScore) prompts.ComponentQuestionContext {
+func buildComponentQuestionContext(assessmentKind, classContext string, dir OrchestratorDirective, score ComponentScore) prompts.ComponentQuestionContext {
 	recent := make([]prompts.RecentQuestionEntry, 0, len(score.RecentHistory))
 	for _, h := range score.RecentHistory {
 		recent = append(recent, prompts.RecentQuestionEntry{
@@ -91,6 +93,8 @@ func buildComponentQuestionContext(dir OrchestratorDirective, score ComponentSco
 		})
 	}
 	return prompts.ComponentQuestionContext{
+		AssessmentKind:   assessmentKind,
+		ClassContext:     classContext,
 		Class:            score.Component.Class,
 		SectionID:        dir.SectionID,
 		SectionTitle:     dir.SectionTitle,

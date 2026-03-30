@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,9 +26,66 @@ type KnowledgeIngestResult struct {
 	IngestRunID     string
 }
 
+// CollectSupportedFiles returns all supported files under root, recursively.
+// This is exposed so callers (e.g. CLI, TUI) can build a file list before
+// calling IngestKnowledgeFilesStream.
+func CollectSupportedFiles(root string) ([]string, error) {
+	return collectFiles(root)
+}
+
 // IngestKnowledgeFolderStream runs the full compose/embed/consolidate pipeline
-// and persists note, section, component, and usage data.
+// for all supported files found recursively under folderPath.
 func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
+	emit := func(event ProgressEvent) {
+		if onProgress != nil {
+			onProgress(event)
+		}
+	}
+
+	emit(ProgressEvent{Label: "Discover files", Detail: folderPath})
+	files, err := collectFiles(folderPath)
+	if err != nil {
+		emit(ProgressEvent{Label: "Discover files", Detail: folderPath, Done: true, Err: err})
+		return KnowledgeIngestResult{}, fmt.Errorf("collect files from %q: %w", folderPath, err)
+	}
+	emit(ProgressEvent{Label: "Discover files", Detail: fmt.Sprintf("%d file(s)", len(files)), Done: true})
+	if len(files) == 0 {
+		return KnowledgeIngestResult{}, fmt.Errorf("no supported files found in %q", folderPath)
+	}
+
+	return runKnowledgePipeline(files, class, provider, embeddingProvider, cfg, onProgress)
+}
+
+// IngestKnowledgeFilesStream runs the full compose/embed/consolidate pipeline
+// for an explicit list of file paths. Files that do not exist or have an
+// unsupported extension are skipped with a warning event.
+func IngestKnowledgeFilesStream(files []string, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
+	emit := func(event ProgressEvent) {
+		if onProgress != nil {
+			onProgress(event)
+		}
+	}
+
+	var validated []string
+	for _, f := range files {
+		info, err := os.Stat(f)
+		if err != nil || info.IsDir() || !supportedExts[strings.ToLower(filepath.Ext(f))] {
+			emit(ProgressEvent{Label: "Skip file", Detail: f, Done: true, Err: fmt.Errorf("unsupported or missing")})
+			continue
+		}
+		validated = append(validated, f)
+	}
+
+	emit(ProgressEvent{Label: "Discover files", Detail: fmt.Sprintf("%d file(s)", len(validated)), Done: true})
+	if len(validated) == 0 {
+		return KnowledgeIngestResult{}, fmt.Errorf("no supported files to ingest")
+	}
+
+	return runKnowledgePipeline(validated, class, provider, embeddingProvider, cfg, onProgress)
+}
+
+// runKnowledgePipeline is the shared implementation for folder and file-list ingestion.
+func runKnowledgePipeline(files []string, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
 	emit := func(event ProgressEvent) {
 		if onProgress != nil {
 			onProgress(event)
@@ -45,18 +103,6 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 			Err:    nil,
 		})
 	}
-
-	emit(ProgressEvent{Label: "Discover files", Detail: folderPath})
-	files, err := collectFiles(folderPath)
-	if err != nil {
-		emit(ProgressEvent{Label: "Discover files", Detail: folderPath, Done: true, Err: err})
-		return result, fmt.Errorf("collect files from %q: %w", folderPath, err)
-	}
-	emit(ProgressEvent{Label: "Discover files", Detail: fmt.Sprintf("%d file(s)", len(files)), Done: true})
-	if len(files) == 0 {
-		return result, fmt.Errorf("no supported files found in %q", folderPath)
-	}
-
 	sectionIndex, err := state.LoadSectionIndex()
 	if err != nil {
 		return result, fmt.Errorf("load section index: %w", err)

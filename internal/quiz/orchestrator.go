@@ -28,6 +28,8 @@ type OrchestratorDirective struct {
 // use, and from which angle.  Returns a list of OrchestratorDirectives.
 func runOrchestratorAgent(
 	class string,
+	assessmentKind string,
+	classContext string,
 	candidates []ComponentScore,
 	totalCount int,
 	typePreference string,
@@ -61,7 +63,7 @@ func runOrchestratorAgent(
 		}
 	}
 
-	prompt := prompts.OrchestratorPrompt(class, pCandidates, totalCount, typePreference, cfg.CustomPromptContext)
+	prompt := prompts.OrchestratorPrompt(class, assessmentKind, classContext, pCandidates, totalCount, typePreference, cfg.CustomPromptContext)
 
 	if onProgress != nil {
 		onProgress(ProgressEvent{Label: "Orchestrator", Detail: "Selecting components to quiz"})

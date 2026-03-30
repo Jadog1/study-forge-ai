@@ -16,12 +16,12 @@ import (
 var ingestClass string
 
 var ingestCmd = &cobra.Command{
-	Use:   "ingest <path>",
-	Short: "Ingest raw notes from a folder and extract AI metadata",
-	Args:  cobra.ExactArgs(1),
+	Use:   "ingest <path> [path...]",
+	Short: "Ingest raw notes from folders or specific files and extract AI metadata",
+	Long: `Ingest one or more paths. Each path may be a folder (recursively searched)
+or a specific supported file (.md, .txt, .rst). Mixing files and folders is allowed.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		folderPath := args[0]
-
 		cfg, err := config.Load()
 		if err != nil {
 			return err
@@ -29,6 +29,36 @@ var ingestCmd = &cobra.Command{
 		orc, err := orchestrator.New(cfg)
 		if err != nil {
 			return err
+		}
+
+		// Build a unified, deduplicated list of files from all provided paths.
+		var allFiles []string
+		seen := make(map[string]bool)
+		for _, arg := range args {
+			info, err := os.Stat(arg)
+			if err != nil {
+				return fmt.Errorf("cannot access %q: %w", arg, err)
+			}
+			var collected []string
+			if info.IsDir() {
+				collected, err = ingestion.CollectSupportedFiles(arg)
+				if err != nil {
+					return fmt.Errorf("collect files from %q: %w", arg, err)
+				}
+			} else {
+				// Individual file — validation (extension check) is handled by IngestKnowledgeFilesStream.
+				collected = []string{arg}
+			}
+			for _, f := range collected {
+				if !seen[f] {
+					seen[f] = true
+					allFiles = append(allFiles, f)
+				}
+			}
+		}
+
+		if len(allFiles) == 0 {
+			return fmt.Errorf("no supported files found in the provided paths")
 		}
 
 		// Check if embeddings are disabled and warn user
@@ -45,13 +75,13 @@ var ingestCmd = &cobra.Command{
 			fmt.Println()
 		}
 
-		fmt.Printf("Ingesting notes from %q", folderPath)
+		fmt.Printf("Ingesting %d file(s)", len(allFiles))
 		if ingestClass != "" {
 			fmt.Printf(" [class: %s]", ingestClass)
 		}
 		fmt.Println(" ...")
 
-		knowledge, err := ingestion.IngestKnowledgeFolderStream(folderPath, ingestClass, orc.Provider, orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
+		knowledge, err := ingestion.IngestKnowledgeFilesStream(allFiles, ingestClass, orc.Provider, orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
 			if e.Label == "" {
 				return
 			}

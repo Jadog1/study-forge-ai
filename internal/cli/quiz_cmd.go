@@ -16,6 +16,7 @@ import (
 
 var (
 	quizCount int
+	quizAssessment string
 	quizType  string
 	quizTags  []string
 )
@@ -37,6 +38,7 @@ var quizCmd = &cobra.Command{
 		}
 
 		opts := quiz.QuizOptions{
+			AssessmentKind: strings.TrimSpace(quizAssessment),
 			Count:          quizCount,
 			TypePreference: strings.TrimSpace(quizType),
 			Tags:           quizTags,
@@ -93,7 +95,8 @@ var quizCmd = &cobra.Command{
 
 func init() {
 	quizCmd.Flags().IntVar(&quizCount, "count", 10, "Target question count")
-	quizCmd.Flags().StringVar(&quizType, "type", "multiple-choice", "Preferred question type")
+	quizCmd.Flags().StringVar(&quizAssessment, "assessment", "quiz", "Assessment profile kind (e.g. quiz, exam)")
+	quizCmd.Flags().StringVar(&quizType, "type", "context-default", "Preferred question type or context-default")
 	quizCmd.Flags().StringSliceVar(&quizTags, "tags", nil, "Restrict source components to sections with matching tags")
 	rootCmd.AddCommand(quizCmd)
 }

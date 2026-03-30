@@ -3,6 +3,7 @@ package search
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -54,6 +55,44 @@ func ByClass(class string) ([]Result, error) {
 	for _, n := range idx.Notes {
 		if strings.EqualFold(n.Class, class) {
 			results = append(results, Result{Note: n, Score: 1})
+		}
+	}
+	return results, nil
+}
+
+// BySourcePath returns all sections and components whose SourcePaths list
+// contains a path that matches sourcePath (case-insensitive suffix match so
+// the caller may provide either an absolute path or just the filename).
+func BySourcePath(sourcePath string) ([]KnowledgeResult, error) {
+	sectionIdx, err := state.LoadSectionIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load section index: %w", err)
+	}
+	componentIdx, err := state.LoadComponentIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load component index: %w", err)
+	}
+
+	needle := strings.ToLower(filepath.ToSlash(sourcePath))
+
+	matchesPath := func(paths []string) bool {
+		for _, p := range paths {
+			if strings.HasSuffix(strings.ToLower(filepath.ToSlash(p)), needle) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var results []KnowledgeResult
+	for _, sec := range sectionIdx.Sections {
+		if matchesPath(sec.SourcePaths) {
+			results = append(results, KnowledgeResult{Kind: "section", Section: sec, Score: 1})
+		}
+	}
+	for _, cmp := range componentIdx.Components {
+		if matchesPath(cmp.SourcePaths) {
+			results = append(results, KnowledgeResult{Kind: "component", Component: cmp, Score: 1})
 		}
 	}
 	return results, nil

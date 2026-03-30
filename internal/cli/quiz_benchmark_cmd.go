@@ -22,6 +22,7 @@ var (
 	quizBenchmarkModels []string
 	quizBenchmarkRuns   int
 	quizBenchmarkCount  int
+	quizBenchmarkAssessment string
 	quizBenchmarkType   string
 	quizBenchmarkTags   []string
 	quizBenchmarkKeep   bool
@@ -72,7 +73,7 @@ var quizBenchmarkCmd = &cobra.Command{
 		}
 
 		if report.TypePreference == "" {
-			report.TypePreference = "multiple-choice"
+			report.TypePreference = "context-default"
 		}
 
 		for _, model := range models {
@@ -84,6 +85,7 @@ var quizBenchmarkCmd = &cobra.Command{
 				}
 				telemetry := newTelemetryProvider(provider, cfg)
 				opts := quiz.QuizOptions{
+					AssessmentKind: strings.TrimSpace(quizBenchmarkAssessment),
 					Count:          quizBenchmarkCount,
 					TypePreference: report.TypePreference,
 					Tags:           append([]string(nil), quizBenchmarkTags...),
@@ -173,7 +175,8 @@ func init() {
 	quizBenchmarkCmd.Flags().StringSliceVar(&quizBenchmarkModels, "models", []string{"claude-4-5-haiku", "claude-4-5-sonnet"}, "Claude model IDs to compare")
 	quizBenchmarkCmd.Flags().IntVar(&quizBenchmarkRuns, "runs", 5, "Number of runs per model")
 	quizBenchmarkCmd.Flags().IntVar(&quizBenchmarkCount, "count", 10, "Target question count per run")
-	quizBenchmarkCmd.Flags().StringVar(&quizBenchmarkType, "type", "multiple-choice", "Preferred question type")
+	quizBenchmarkCmd.Flags().StringVar(&quizBenchmarkAssessment, "assessment", "quiz", "Assessment profile kind (e.g. quiz, exam)")
+	quizBenchmarkCmd.Flags().StringVar(&quizBenchmarkType, "type", "context-default", "Preferred question type or context-default")
 	quizBenchmarkCmd.Flags().StringSliceVar(&quizBenchmarkTags, "tags", nil, "Restrict source components to sections with matching tags")
 	quizBenchmarkCmd.Flags().BoolVar(&quizBenchmarkKeep, "keep", false, "Keep generated quiz files instead of deleting them")
 	quizBenchmarkCmd.Flags().StringVar(&quizBenchmarkOut, "out", "", "Write full benchmark report JSON to this path")

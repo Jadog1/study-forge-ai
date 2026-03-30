@@ -15,6 +15,7 @@ import (
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/orchestrator"
 	"github.com/studyforge/study-agent/internal/quiz"
+	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
 )
 
@@ -48,7 +49,10 @@ type WorkflowModel struct {
 	pathInput  textinput.Model // folder path (ingest only)
 	classInput textinput.Model // class name (ingest/generate)
 	countInput textinput.Model // quiz question count (generate)
-	typeInput  textinput.Model // preferred question type (generate)
+	assessmentOptions []string // quiz/exam context profile options
+	assessmentIdx     int
+	questionTypeOpts  []string // context-default + supported sfq types
+	questionTypeIdx   int
 	fieldIdx   int             // focused field index for current workflow kind
 
 	// Ingest-specific options.
@@ -73,6 +77,10 @@ type WorkflowModel struct {
 	// Outcome display.
 	result string
 	errMsg string
+
+	// File picker sub-overlay for selecting individual files.
+	filePicker    FilePickerModel
+	selectedFiles []string // files chosen via the picker (overrides folder path for ingest)
 }
 
 func newWorkflow() WorkflowModel {
@@ -91,19 +99,31 @@ func newWorkflow() WorkflowModel {
 	countInput.CharLimit = 4
 	countInput.Width = 16
 
-	typeInput := textinput.New()
-	typeInput.Placeholder = "multiple-choice"
-	typeInput.CharLimit = 40
-	typeInput.Width = 28
+	assessmentOptions := make([]string, 0, len(classpkg.ContextProfiles()))
+	for _, profile := range classpkg.ContextProfiles() {
+		assessmentOptions = append(assessmentOptions, profile.Kind)
+	}
+	if len(assessmentOptions) == 0 {
+		assessmentOptions = []string{"quiz"}
+	}
 
-	return WorkflowModel{pathInput: pathInput, classInput: classInput, countInput: countInput, typeInput: typeInput}
+	questionTypeOpts := []string{"context-default"}
+	questionTypeOpts = append(questionTypeOpts, sfq.SupportedQuestionTypes()...)
+
+	return WorkflowModel{
+		pathInput:         pathInput,
+		classInput:        classInput,
+		countInput:        countInput,
+		assessmentOptions: assessmentOptions,
+		questionTypeOpts:  questionTypeOpts,
+		filePicker:        newFilePicker(),
+	}
 }
 
 func (w WorkflowModel) resize(width int) WorkflowModel {
 	w.pathInput.Width = clamp(width-6, 18, width)
 	w.classInput.Width = clamp(width-6, 18, width)
 	w.countInput.Width = clamp(width-30, 10, 18)
-	w.typeInput.Width = clamp(width-18, 18, width)
 	return w
 }
 
@@ -125,11 +145,15 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.pathInput.SetValue("")
 	w.classInput.SetValue(defaultClass)
 	w.countInput.SetValue("10")
-	w.typeInput.SetValue("multiple-choice")
 	w.pathInput.Placeholder = "folder path  (e.g. ./notes)"
 	w.classInput.Placeholder = "class name"
+	w.assessmentIdx = 0
+	w.questionTypeIdx = 0
 	w.cleanBeforeIngest = false
 	w.includeEmbeddings = false
+	w.selectedFiles = nil
+	w.filePicker = w.filePicker.Open("")
+	w.filePicker.visible = false // closed by default until user activates it
 
 	switch kind {
 	case WorkflowIngest:
@@ -168,6 +192,25 @@ func (w WorkflowModel) Update(msg tea.Msg, orc *orchestrator.Orchestrator, cfg *
 	if !w.visible {
 		return w, false, "", nil
 	}
+
+	// Delegate to file picker when it is open.
+	if w.filePicker.Visible() {
+		var cmd tea.Cmd
+		w.filePicker, cmd = w.filePicker.Update(msg)
+		if !w.filePicker.Visible() {
+			if w.filePicker.Done() {
+				w.selectedFiles = w.filePicker.SelectedFiles()
+				if len(w.selectedFiles) > 0 {
+					return w, false, fmt.Sprintf("%d file(s) selected", len(w.selectedFiles)), cmd
+				}
+				return w, false, "No files selected", cmd
+			}
+			// Cancelled — keep previous selection.
+			return w, false, "", cmd
+		}
+		return w, false, "", cmd
+	}
+
 	switch w.step {
 	case stepInput:
 		return w.updateInput(msg, orc, cfg)
@@ -216,6 +259,14 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			}
 			return w, false, "", nil
 		case "left", "right":
+			if w.kind == WorkflowGenerate && w.fieldIdx == 2 {
+				w.assessmentIdx = cycleIndex(w.assessmentIdx, len(w.assessmentOptions), k.String() == "right")
+				return w, false, "", nil
+			}
+			if w.kind == WorkflowGenerate && w.fieldIdx == 3 {
+				w.questionTypeIdx = cycleIndex(w.questionTypeIdx, len(w.questionTypeOpts), k.String() == "right")
+				return w, false, "", nil
+			}
 			// Toggle checkbox on left/right when on clean field
 			if w.kind == WorkflowIngest && w.fieldIdx == 2 {
 				w.cleanBeforeIngest = !w.cleanBeforeIngest
@@ -225,6 +276,14 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			}
 			return w, false, "", nil
 		case "space":
+			if w.kind == WorkflowGenerate && w.fieldIdx == 2 {
+				w.assessmentIdx = cycleIndex(w.assessmentIdx, len(w.assessmentOptions), true)
+				return w, false, "", nil
+			}
+			if w.kind == WorkflowGenerate && w.fieldIdx == 3 {
+				w.questionTypeIdx = cycleIndex(w.questionTypeIdx, len(w.questionTypeOpts), true)
+				return w, false, "", nil
+			}
 			// Toggle checkbox on space when on clean field
 			if w.kind == WorkflowIngest && w.fieldIdx == 2 {
 				w.cleanBeforeIngest = !w.cleanBeforeIngest
@@ -236,6 +295,12 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			}
 			// Otherwise, pass through to current field
 		case "enter":
+			// Field 3 on WorkflowIngest opens the file picker.
+			if w.kind == WorkflowIngest && w.fieldIdx == 3 {
+				startDir := strings.TrimSpace(w.pathInput.Value())
+				w.filePicker = w.filePicker.Open(startDir)
+				return w, false, "Browse files…", nil
+			}
 			return w.startWorkflow(orc, cfg)
 		}
 	}
@@ -250,10 +315,8 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			w.classInput, cmd = w.classInput.Update(msg)
 		case 1:
 			w.countInput, cmd = w.countInput.Update(msg)
-		case 2:
-			w.typeInput, cmd = w.typeInput.Update(msg)
 		default:
-			w.classInput, cmd = w.classInput.Update(msg)
+			cmd = nil
 		}
 	} else if w.kind == WorkflowExport {
 		w.classInput, cmd = w.classInput.Update(msg)
@@ -268,14 +331,13 @@ func (w *WorkflowModel) updateIngestFieldFocus() {
 	w.pathInput.Blur()
 	w.classInput.Blur()
 	w.countInput.Blur()
-	w.typeInput.Blur()
 	switch w.fieldIdx {
 	case 0:
 		w.pathInput.Focus()
 	case 1:
 		w.classInput.Focus()
-	case 2:
-		// Clean checkbox doesn't get focus, just highlight
+	case 2, 3:
+		// Checkbox and browse button rows — no text input focus.
 	}
 }
 
@@ -283,14 +345,13 @@ func (w *WorkflowModel) updateGenerateFieldFocus() {
 	w.pathInput.Blur()
 	w.classInput.Blur()
 	w.countInput.Blur()
-	w.typeInput.Blur()
 	switch w.fieldIdx {
 	case 0:
 		w.classInput.Focus()
 	case 1:
 		w.countInput.Focus()
-	case 2:
-		w.typeInput.Focus()
+	case 2, 3:
+		// Selection rows use highlighted styling only.
 	}
 }
 
@@ -298,7 +359,6 @@ func (w *WorkflowModel) updateExportFieldFocus() {
 	w.pathInput.Blur()
 	w.classInput.Blur()
 	w.countInput.Blur()
-	w.typeInput.Blur()
 	switch w.fieldIdx {
 	case 0:
 		w.pathInput.Focus()
@@ -311,7 +371,11 @@ func (w *WorkflowModel) updateExportFieldFocus() {
 
 func (w WorkflowModel) fieldCount() int {
 	switch w.kind {
-	case WorkflowIngest, WorkflowGenerate, WorkflowExport:
+	case WorkflowIngest:
+		return 4 // path, class, clean checkbox, browse
+	case WorkflowGenerate:
+		return 4 // class, count, assessment, question preference
+	case WorkflowExport:
 		return 3
 	default:
 		return 0
@@ -335,6 +399,25 @@ func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config
 	switch w.kind {
 	case WorkflowIngest:
 		path := strings.TrimSpace(w.pathInput.Value())
+		if len(w.selectedFiles) > 0 {
+			// Individual-file mode: bypass the embeddings confirmation (same logic applies).
+			if orc.EmbeddingProvider.Disabled() {
+				w.step = stepConfirm
+				w.confirmType = "embeddings_disabled"
+				w.confirmMsg = fmt.Sprintf(
+					"Embeddings are not configured (provider: %s).\nDeduplication and semantic consolidation will NOT happen.\n\nContinue anyway?",
+					orc.EmbeddingProvider.Name(),
+				)
+				return w, false, "", nil
+			}
+			if w.cleanBeforeIngest {
+				if err := state.ClearIngestedData(); err != nil {
+					return w, false, fmt.Sprintf("Failed to clear ingestion data: %v", err), nil
+				}
+			}
+			w.step = stepRunning
+			return w, true, "Running " + w.title() + "…", runIngestFilesCmd(w.selectedFiles, class, orc, cfg)
+		}
 		return w.runIngestWorkflow(path, class, orc, cfg, true)
 
 	case WorkflowGenerate:
@@ -342,8 +425,9 @@ func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config
 			return w, false, "Class name is required", nil
 		}
 		opts := quiz.QuizOptions{
+			AssessmentKind: w.selectedAssessmentKind(),
 			Count:          parseQuizCount(w.countInput.Value()),
-			TypePreference: strings.TrimSpace(w.typeInput.Value()),
+			TypePreference: w.selectedQuestionPreference(),
 		}
 		w.step = stepRunning
 		return w, true, "Running " + w.title() + "…", runQuizCmd(class, opts, orc, cfg)
@@ -396,11 +480,22 @@ func (w WorkflowModel) updateConfirm(msg tea.Msg, orc *orchestrator.Orchestrator
 
 			switch w.kind {
 			case WorkflowIngest:
-				return w.runIngestWorkflow(path, class, orc, cfg, false)
+				if len(w.selectedFiles) > 0 {
+					if w.cleanBeforeIngest {
+						if err := state.ClearIngestedData(); err != nil {
+							return w, false, fmt.Sprintf("Failed to clear ingestion data: %v", err), nil
+						}
+					}
+					w.step = stepRunning
+					cmd = runIngestFilesCmd(w.selectedFiles, class, orc, cfg)
+				} else {
+					return w.runIngestWorkflow(path, class, orc, cfg, false)
+				}
 			case WorkflowGenerate:
 				opts := quiz.QuizOptions{
+					AssessmentKind: w.selectedAssessmentKind(),
 					Count:          parseQuizCount(w.countInput.Value()),
-					TypePreference: strings.TrimSpace(w.typeInput.Value()),
+					TypePreference: w.selectedQuestionPreference(),
 				}
 				w.step = stepRunning
 				cmd = runQuizCmd(class, opts, orc, cfg)
@@ -639,6 +734,13 @@ func (w WorkflowModel) View(width, height int) string {
 	b.WriteString(headerStyle.Render(w.title()) + "\n")
 	b.WriteString(dimStyle.Render("Guided workflow modal") + "\n\n")
 
+	// When the file picker is active, render it in place of the normal content.
+	if w.filePicker.Visible() {
+		pickerContent := w.filePicker.View(innerWidth, innerHeight)
+		content := lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).MaxHeight(innerHeight).Render(pickerContent)
+		return workflowStyle.Width(innerWidth).Height(innerHeight).Render(content)
+	}
+
 	switch w.step {
 	case stepInput:
 		b.WriteString(w.viewInputStep())
@@ -725,7 +827,17 @@ func (w WorkflowModel) viewInputStep() string {
 			checkMark = "[✓]"
 		}
 		b.WriteString(checkboxStyle.Render(checkMark + " Delete all previous ingestion data and start fresh\n\n"))
-		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to start  •  Esc to cancel"))
+		// Browse-files button row.
+		browseStyle := dimStyle
+		if w.fieldIdx == 3 {
+			browseStyle = warnStyle
+		}
+		if len(w.selectedFiles) > 0 {
+			b.WriteString(browseStyle.Render(fmt.Sprintf("[✓] %d file(s) selected  (Enter to browse again)\n\n", len(w.selectedFiles))))
+		} else {
+			b.WriteString(browseStyle.Render("[ ] Browse & select individual files  (Enter to open picker)\n\n"))
+		}
+		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to start or browse  •  Esc to cancel"))
 	case WorkflowGenerate:
 		b.WriteString(labelStyle.Render("Class name:") + "\n")
 		if classes, _ := classpkg.List(); len(classes) > 0 {
@@ -734,9 +846,12 @@ func (w WorkflowModel) viewInputStep() string {
 		b.WriteString(w.classInput.View() + "\n\n")
 		b.WriteString(labelStyle.Render("Question count:") + "\n")
 		b.WriteString(w.countInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Preferred type:") + "\n")
-		b.WriteString(w.typeInput.View() + "\n\n")
-		b.WriteString(dimStyle.Render("Tab/Shift+Tab navigate  •  Enter to generate  •  Esc to cancel"))
+		b.WriteString(labelStyle.Render("Assessment type:") + "\n")
+		b.WriteString(w.renderSelectionRow(w.selectedAssessmentKind(), w.fieldIdx == 2) + "\n\n")
+		b.WriteString(labelStyle.Render("Question preference:") + "\n")
+		b.WriteString(w.renderSelectionRow(w.selectedQuestionPreference(), w.fieldIdx == 3) + "\n")
+		b.WriteString(dimStyle.Render("context-default uses default_question_type from class context file") + "\n\n")
+		b.WriteString(dimStyle.Render("Tab/Shift+Tab navigate  •  Left/Right or Space cycle  •  Enter to generate  •  Esc to cancel"))
 	case WorkflowExport:
 		b.WriteString(labelStyle.Render("Output file:") + "\n")
 		b.WriteString(w.pathInput.View() + "\n\n")
@@ -755,6 +870,53 @@ func (w WorkflowModel) viewInputStep() string {
 		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to export  •  Esc to cancel"))
 	}
 	return b.String()
+}
+
+func (w WorkflowModel) selectedAssessmentKind() string {
+	if len(w.assessmentOptions) == 0 {
+		return classpkg.DefaultContextProfile()
+	}
+	idx := w.assessmentIdx
+	if idx < 0 || idx >= len(w.assessmentOptions) {
+		idx = 0
+	}
+	return classpkg.NormalizeContextProfile(w.assessmentOptions[idx])
+}
+
+func (w WorkflowModel) selectedQuestionPreference() string {
+	if len(w.questionTypeOpts) == 0 {
+		return "context-default"
+	}
+	idx := w.questionTypeIdx
+	if idx < 0 || idx >= len(w.questionTypeOpts) {
+		idx = 0
+	}
+	value := strings.TrimSpace(w.questionTypeOpts[idx])
+	if value == "" {
+		return "context-default"
+	}
+	return value
+}
+
+func (w WorkflowModel) renderSelectionRow(value string, focused bool) string {
+	row := "< " + value + " >"
+	if focused {
+		return warnStyle.Render(row)
+	}
+	return dimStyle.Render(row)
+}
+
+func cycleIndex(current, size int, forward bool) int {
+	if size <= 0 {
+		return 0
+	}
+	if current < 0 || current >= size {
+		current = 0
+	}
+	if forward {
+		return (current + 1) % size
+	}
+	return (current - 1 + size) % size
 }
 
 func (w WorkflowModel) doneContent() string {

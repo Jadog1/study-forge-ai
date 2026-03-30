@@ -119,6 +119,50 @@ func runIngestCmd(folderPath, class string, orc *orchestrator.Orchestrator, cfg 
 	return waitForAIStreamCmd(stream)
 }
 
+// runIngestFilesCmd processes an explicit list of files with the AI provider
+// and updates the notes index.
+func runIngestFilesCmd(files []string, class string, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
+	stream := make(chan aiStreamEvent, 32)
+	go func() {
+		defer close(stream)
+
+		knowledge, err := ingestion.IngestKnowledgeFilesStream(files, class, orchestrator.BuildProviderForRole("ingestion", cfg), orc.EmbeddingProvider, cfg, func(e ingestion.ProgressEvent) {
+			stream <- aiStreamEvent{
+				actionLabel: e.Label,
+				actionInfo:  e.Detail,
+				actionDone:  e.Done,
+				err:         e.Err,
+			}
+		})
+		if err != nil {
+			stream <- aiStreamEvent{err: err, done: true}
+			return
+		}
+
+		stream <- aiStreamEvent{actionLabel: "Update index", actionInfo: "loading", actionDone: false}
+		idx, idxErr := state.LoadNotesIndex()
+		if idxErr != nil {
+			stream <- aiStreamEvent{err: fmt.Errorf("load notes index: %w", idxErr), done: true}
+			return
+		}
+		for _, n := range knowledge.Notes {
+			idx.AddOrUpdate(n)
+		}
+		if saveErr := state.SaveNotesIndex(idx); saveErr != nil {
+			stream <- aiStreamEvent{err: fmt.Errorf("save notes index: %w", saveErr), done: true}
+			return
+		}
+		stream <- aiStreamEvent{actionLabel: "Update index", actionInfo: fmt.Sprintf("%d note(s)", len(knowledge.Notes)), actionDone: true}
+
+		stream <- aiStreamEvent{
+			part: fmt.Sprintf("Ingested %d file(s) (%d note(s))\nSections: %d\nComponents: %d\nUsage events: %d", len(files), len(knowledge.Notes), knowledge.SectionsAdded, knowledge.ComponentsAdded, knowledge.UsageEvents),
+			done: true,
+		}
+	}()
+
+	return waitForAIStreamCmd(stream)
+}
+
 // runQuizCmd generates a unified adaptive quiz for the given class, streaming
 // agent tool-call events back to the TUI as aiStreamMsgs.
 func runQuizCmd(class string, opts quiz.QuizOptions, orc *orchestrator.Orchestrator, cfg *config.Config) tea.Cmd {
