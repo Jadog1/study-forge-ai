@@ -14,11 +14,11 @@ import (
 
 // SyncReport summarizes one tracked-session import run.
 type SyncReport struct {
-	ImportedSessions   int
-	BackfilledSessions int
-	FailedSessions     int
-	PendingQuizzes     int
-	UnmappedAnswers    int
+	ImportedSessions   int `json:"imported_sessions"`
+	BackfilledSessions int `json:"backfilled_sessions"`
+	FailedSessions     int `json:"failed_sessions"`
+	PendingQuizzes     int `json:"pending_quizzes"`
+	UnmappedAnswers    int `json:"unmapped_answers"`
 }
 
 // SyncOptions controls tracked-session import behavior.
@@ -203,6 +203,9 @@ func matchQuizSection(questionID string, lookup map[string]state.QuizSection) (s
 
 func questionIDCandidates(questionID string) []string {
 	normalized := strings.TrimSpace(questionID)
+	// Strip surrounding quote characters that some sfq versions emit (e.g. `"q-001"`)
+	normalized = strings.Trim(normalized, "\"'")
+	normalized = strings.TrimSpace(normalized)
 	if normalized == "" {
 		return nil
 	}
