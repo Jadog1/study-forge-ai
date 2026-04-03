@@ -10,7 +10,6 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/orchestrator"
@@ -128,11 +127,18 @@ func newWorkflow() WorkflowModel {
 	}
 }
 
-func (w WorkflowModel) resize(width int) WorkflowModel {
+func (w WorkflowModel) resize(width, height int) WorkflowModel {
 	w.pathInput.Width = clamp(width-6, 18, width)
 	w.classInput.Width = clamp(width-6, 18, width)
 	w.countInput.Width = clamp(width-30, 10, 18)
 	w.sectionsInput.Width = clamp(width-6, 18, width)
+
+	panelHeight := clamp(height-6, 12, 26)
+	innerHeight := clamp(panelHeight-workflowStyle.GetVerticalFrameSize(), 8, panelHeight)
+	w.actionRows = clamp(innerHeight-6, 3, innerHeight-2)
+	w.doneRows = clamp(innerHeight-8, 3, innerHeight-3)
+	w.clampActionOffset()
+	w.clampDoneOffset()
 	return w
 }
 
@@ -411,83 +417,6 @@ func (w *WorkflowModel) updateFieldFocus() {
 	}
 }
 
-func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config.Config) (WorkflowModel, bool, string, tea.Cmd) {
-	class := strings.TrimSpace(w.classInput.Value())
-
-	switch w.kind {
-	case WorkflowIngest:
-		path := strings.TrimSpace(w.pathInput.Value())
-		if len(w.selectedFiles) > 0 {
-			// Individual-file mode: bypass the embeddings confirmation (same logic applies).
-			if orc.EmbeddingProvider.Disabled() {
-				w.step = stepConfirm
-				w.confirmType = "embeddings_disabled"
-				w.confirmMsg = fmt.Sprintf(
-					"Embeddings are not configured (provider: %s).\nDeduplication and semantic consolidation will NOT happen.\n\nContinue anyway?",
-					orc.EmbeddingProvider.Name(),
-				)
-				return w, false, "", nil
-			}
-			if w.cleanBeforeIngest {
-				if err := state.ClearIngestedData(); err != nil {
-					return w, false, fmt.Sprintf("Failed to clear ingestion data: %v", err), nil
-				}
-			}
-			w.step = stepRunning
-			return w, true, "Running " + w.title() + "…", runIngestFilesCmd(w.selectedFiles, class, orc, cfg)
-		}
-		return w.runIngestWorkflow(path, class, orc, cfg, true)
-
-	case WorkflowGenerate:
-		if class == "" {
-			return w, false, "Class name is required", nil
-		}
-		opts := quiz.QuizOptions{
-			AssessmentKind:  w.selectedAssessmentKind(),
-			Count:           parseQuizCount(w.countInput.Value()),
-			TypePreference:  w.selectedQuestionPreference(),
-			FocusedSections: parseSectionsList(w.sectionsInput.Value()),
-		}
-		w.step = stepRunning
-		return w, true, "Running " + w.title() + "…", runQuizCmd(class, opts, orc, cfg)
-
-	case WorkflowExport:
-		path := strings.TrimSpace(w.pathInput.Value())
-		if path == "" {
-			return w, false, "Output file path is required", nil
-		}
-		w.step = stepRunning
-		return w, true, "Running " + w.title() + "…", runExportKnowledgeCmd(path, class, w.includeEmbeddings)
-	}
-
-	return w, false, "", nil
-}
-
-func (w WorkflowModel) runIngestWorkflow(path, class string, orc *orchestrator.Orchestrator, cfg *config.Config, requireEmbeddingsConfirm bool) (WorkflowModel, bool, string, tea.Cmd) {
-	if path == "" {
-		return w, false, "Folder path is required", nil
-	}
-
-	if requireEmbeddingsConfirm && orc.EmbeddingProvider.Disabled() {
-		w.step = stepConfirm
-		w.confirmType = "embeddings_disabled"
-		w.confirmMsg = fmt.Sprintf(
-			"Embeddings are not configured (provider: %s).\nDeduplication and semantic consolidation will NOT happen.\n\nContinue anyway?",
-			orc.EmbeddingProvider.Name(),
-		)
-		return w, false, "", nil
-	}
-
-	if w.cleanBeforeIngest {
-		if err := state.ClearIngestedData(); err != nil {
-			return w, false, fmt.Sprintf("Failed to clear ingestion data: %v", err), nil
-		}
-	}
-
-	w.step = stepRunning
-	return w, true, "Running " + w.title() + "…", runIngestCmd(path, class, orc, cfg)
-}
-
 func (w WorkflowModel) updateConfirm(msg tea.Msg, orc *orchestrator.Orchestrator, cfg *config.Config) (WorkflowModel, bool, string, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.String() {
@@ -641,6 +570,12 @@ func (w *WorkflowModel) scrollActionsToBottom() {
 	w.actionOffset = w.maxActionOffset()
 }
 
+func (w *WorkflowModel) clampDoneOffset() {
+	if w.doneOffset < 0 {
+		w.doneOffset = 0
+	}
+}
+
 func (w WorkflowModel) visibleActionLines() []string {
 	if len(w.actionLines) == 0 {
 		return nil
@@ -693,21 +628,19 @@ func (w WorkflowModel) updateDone(msg tea.Msg) (WorkflowModel, bool, string, tea
 		switch k.String() {
 		case "up", "k":
 			w.doneOffset--
-			if w.doneOffset < 0 {
-				w.doneOffset = 0
-			}
+			w.clampDoneOffset()
 			return w, false, "", nil
 		case "down", "j":
 			w.doneOffset++
+			w.clampDoneOffset()
 			return w, false, "", nil
 		case "pgup", "b":
 			w.doneOffset -= w.doneRows
-			if w.doneOffset < 0 {
-				w.doneOffset = 0
-			}
+			w.clampDoneOffset()
 			return w, false, "", nil
 		case "pgdown", "f":
 			w.doneOffset += w.doneRows
+			w.clampDoneOffset()
 			return w, false, "", nil
 		case "home", "g":
 			w.doneOffset = 0
@@ -730,171 +663,6 @@ func (w WorkflowModel) updateDone(msg tea.Msg) (WorkflowModel, bool, string, tea
 		}
 	}
 	return w, false, "", nil
-}
-
-// View renders the workflow modal overlay string.
-func (w WorkflowModel) View(width, height int) string {
-	panelWidth := clamp(width-10, 42, 78)
-	panelHeight := clamp(height-6, 12, 26)
-	innerWidth := clamp(panelWidth-workflowStyle.GetHorizontalFrameSize(), 24, panelWidth)
-	innerHeight := clamp(panelHeight-workflowStyle.GetVerticalFrameSize(), 8, panelHeight)
-
-	if w.step == stepRunning {
-		// Reserve room for title, subtitle, status, and scroll hint/footer.
-		rows := clamp(innerHeight-6, 3, innerHeight-2)
-		w.actionRows = rows
-		w.clampActionOffset()
-	}
-	if w.step == stepDone {
-		// Reserve room for title, subtitle, section title, and footer hints.
-		w.doneRows = clamp(innerHeight-8, 3, innerHeight-3)
-	}
-
-	var b strings.Builder
-	b.WriteString(headerStyle.Render(w.title()) + "\n")
-	b.WriteString(dimStyle.Render("Guided workflow modal") + "\n\n")
-
-	// When the file picker is active, render it in place of the normal content.
-	if w.filePicker.Visible() {
-		pickerContent := w.filePicker.View(innerWidth, innerHeight)
-		content := lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).MaxHeight(innerHeight).Render(pickerContent)
-		return workflowStyle.Width(innerWidth).Height(innerHeight).Render(content)
-	}
-
-	switch w.step {
-	case stepInput:
-		b.WriteString(w.viewInputStep())
-	case stepConfirm:
-		b.WriteString(w.viewConfirmStep())
-	case stepRunning:
-		b.WriteString(warnStyle.Render("Running, please wait…") + "\n")
-		visible := w.visibleActionLines()
-		for _, line := range visible {
-			b.WriteString(dimStyle.Render("  "+line) + "\n")
-		}
-		if len(w.actionLines) == 0 {
-			b.WriteString(dimStyle.Render("  Waiting for updates...") + "\n")
-		}
-		if len(w.actionLines) > 0 {
-			start := w.actionOffset + 1
-			end := w.actionOffset + len(visible)
-			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Showing %d-%d of %d  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  End follow", start, end, len(w.actionLines))))
-		}
-	case stepDone:
-		title := "Result"
-		lineStyle := dimStyle
-		if w.errMsg != "" {
-			title = "Error"
-			lineStyle = errorStyle
-		}
-		wrapWidth := clamp(innerWidth-2, 12, innerWidth)
-		allLines := wrapTextLines(w.doneContent(), wrapWidth)
-		maxOffset := len(allLines) - w.doneRows
-		if maxOffset < 0 {
-			maxOffset = 0
-		}
-		if w.doneOffset > maxOffset {
-			w.doneOffset = maxOffset
-		}
-		if w.doneOffset < 0 {
-			w.doneOffset = 0
-		}
-
-		end := w.doneOffset + w.doneRows
-		if end > len(allLines) {
-			end = len(allLines)
-		}
-		visible := allLines[w.doneOffset:end]
-
-		b.WriteString(sectionTitleStyle.Render(title) + "\n")
-		for _, line := range visible {
-			b.WriteString(lineStyle.Render(line) + "\n")
-		}
-		if len(allLines) > 0 {
-			start := w.doneOffset + 1
-			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Showing %d-%d of %d  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  c copy", start, end, len(allLines))))
-		}
-		b.WriteString("\n" + dimStyle.Render("Enter/Esc close  •  Home/End jump"))
-	}
-
-	content := lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).MaxHeight(innerHeight).Render(b.String())
-	return workflowStyle.Width(innerWidth).Height(innerHeight).Render(content)
-}
-
-func (w WorkflowModel) viewConfirmStep() string {
-	var b strings.Builder
-	b.WriteString(warnStyle.Render("⚠ Confirm Settings") + "\n\n")
-	b.WriteString(w.confirmMsg + "\n\n")
-	b.WriteString(dimStyle.Render("Enter to continue  •  Esc to go back"))
-	return b.String()
-}
-
-func (w WorkflowModel) viewInputStep() string {
-	var b strings.Builder
-	switch w.kind {
-	case WorkflowIngest:
-		b.WriteString(labelStyle.Render("Folder path:") + "\n")
-		b.WriteString(w.pathInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Class (optional):") + "\n")
-		b.WriteString(w.classInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Clean before ingest:") + "\n")
-		checkboxStyle := dimStyle
-		if w.fieldIdx == 2 {
-			checkboxStyle = warnStyle
-		}
-		checkMark := "[ ]"
-		if w.cleanBeforeIngest {
-			checkMark = "[✓]"
-		}
-		b.WriteString(checkboxStyle.Render(checkMark + " Delete all previous ingestion data and start fresh\n\n"))
-		// Browse-files button row.
-		browseStyle := dimStyle
-		if w.fieldIdx == 3 {
-			browseStyle = warnStyle
-		}
-		if len(w.selectedFiles) > 0 {
-			b.WriteString(browseStyle.Render(fmt.Sprintf("[✓] %d file(s) selected  (Enter to browse again)\n\n", len(w.selectedFiles))))
-		} else {
-			b.WriteString(browseStyle.Render("[ ] Browse & select individual files  (Enter to open picker)\n\n"))
-		}
-		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to start or browse  •  Esc to cancel"))
-	case WorkflowGenerate:
-		b.WriteString(labelStyle.Render("Class name:") + "\n")
-		if classes, _ := classpkg.List(); len(classes) > 0 {
-			b.WriteString(dimStyle.Render("Available: "+truncate(strings.Join(classes, ", "), 120)) + "\n")
-		}
-		b.WriteString(w.classInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Question count:") + "\n")
-		b.WriteString(w.countInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Assessment type:") + "\n")
-		b.WriteString(w.renderSelectionRow(w.selectedAssessmentKind(), w.fieldIdx == 2) + "\n\n")
-		b.WriteString(labelStyle.Render("Question preference:") + "\n")
-		b.WriteString(w.renderSelectionRow(w.selectedQuestionPreference(), w.fieldIdx == 3) + "\n")
-		b.WriteString(dimStyle.Render("context-default uses default_question_type from class context file") + "\n\n")
-		if w.selectedAssessmentKind() == "focused" {
-			b.WriteString(labelStyle.Render("Sections to focus on:") + "\n")
-			b.WriteString(dimStyle.Render("Comma-separated section titles or IDs (leave blank for all sections)") + "\n")
-			b.WriteString(w.sectionsInput.View() + "\n\n")
-		}
-		b.WriteString(dimStyle.Render("Tab/Shift+Tab navigate  •  Left/Right or Space cycle  •  Enter to generate  •  Esc to cancel"))
-	case WorkflowExport:
-		b.WriteString(labelStyle.Render("Output file:") + "\n")
-		b.WriteString(w.pathInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Class filter (optional):") + "\n")
-		b.WriteString(w.classInput.View() + "\n\n")
-		b.WriteString(labelStyle.Render("Include embeddings:") + "\n")
-		checkboxStyle := dimStyle
-		if w.fieldIdx == 2 {
-			checkboxStyle = warnStyle
-		}
-		checkMark := "[ ]"
-		if w.includeEmbeddings {
-			checkMark = "[✓]"
-		}
-		b.WriteString(checkboxStyle.Render(checkMark + " Include section/component embedding vectors\n\n"))
-		b.WriteString(dimStyle.Render("↑/↓ or Tab to navigate  •  Space to toggle  •  Enter to export  •  Esc to cancel"))
-	}
-	return b.String()
 }
 
 func (w WorkflowModel) selectedAssessmentKind() string {
@@ -923,14 +691,6 @@ func (w WorkflowModel) selectedQuestionPreference() string {
 	return value
 }
 
-func (w WorkflowModel) renderSelectionRow(value string, focused bool) string {
-	row := "< " + value + " >"
-	if focused {
-		return warnStyle.Render(row)
-	}
-	return dimStyle.Render(row)
-}
-
 func cycleIndex(current, size int, forward bool) int {
 	if size <= 0 {
 		return 0
@@ -952,82 +712,6 @@ func (w WorkflowModel) doneContent() string {
 		return w.result
 	}
 	return "Done"
-}
-
-func wrapTextLines(text string, width int) []string {
-	if width <= 1 {
-		width = 1
-	}
-	normalized := strings.ReplaceAll(text, "\r\n", "\n")
-	parts := strings.Split(normalized, "\n")
-	var lines []string
-	for _, part := range parts {
-		wrapped := wrapLine(part, width)
-		if len(wrapped) == 0 {
-			lines = append(lines, "")
-			continue
-		}
-		lines = append(lines, wrapped...)
-	}
-	if len(lines) == 0 {
-		return []string{""}
-	}
-	return lines
-}
-
-func wrapLine(line string, width int) []string {
-	if line == "" {
-		return []string{""}
-	}
-	words := strings.Fields(line)
-	if len(words) == 0 {
-		return []string{""}
-	}
-
-	var out []string
-	current := words[0]
-	for _, word := range words[1:] {
-		candidate := current + " " + word
-		if lipgloss.Width(candidate) <= width {
-			current = candidate
-			continue
-		}
-		if lipgloss.Width(current) > width {
-			out = append(out, splitLongWord(current, width)...)
-		} else {
-			out = append(out, current)
-		}
-		current = word
-	}
-	if lipgloss.Width(current) > width {
-		out = append(out, splitLongWord(current, width)...)
-	} else {
-		out = append(out, current)
-	}
-	return out
-}
-
-func splitLongWord(word string, width int) []string {
-	if width <= 1 {
-		return strings.Split(word, "")
-	}
-	var lines []string
-	var b strings.Builder
-	for _, r := range word {
-		candidate := b.String() + string(r)
-		if lipgloss.Width(candidate) > width {
-			lines = append(lines, b.String())
-			b.Reset()
-		}
-		b.WriteRune(r)
-	}
-	if b.Len() > 0 {
-		lines = append(lines, b.String())
-	}
-	if len(lines) == 0 {
-		return []string{word}
-	}
-	return lines
 }
 
 func parseSectionsList(v string) []string {

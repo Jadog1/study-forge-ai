@@ -23,14 +23,6 @@ const knowledgeSplitMinRightWidth = 24
 const knowledgeSplitMinTotalWidth = 60
 const knowledgeSidebarCompactWidth = 24
 
-type knowledgeQuizMetrics struct {
-	Attempts     int
-	Correct      int
-	Incorrect    int
-	Accuracy     float64
-	LastAnswered time.Time
-}
-
 type knowledgeComponentEntry struct {
 	Component state.Component
 	Metrics   knowledgeQuizMetrics
@@ -184,14 +176,13 @@ func (k KnowledgeTab) update(msg tea.Msg) (KnowledgeTab, tea.Cmd) {
 
 func (k KnowledgeTab) nudgeActivePane(delta int) KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
-		k.componentScroll = clamp(k.componentScroll+delta, 0, k.componentMaxScroll())
-		return k
-	}
-	if len(k.entries) == 0 {
+		innerWidth, innerHeight := k.componentInnerDimensions()
+		lines := k.buildComponentLines(innerWidth)
+		k.componentScroll = clampPaneScroll(k.componentScroll+delta, len(lines), innerHeight)
 		return k
 	}
 	previous := k.selectedSection
-	k.selectedSection = clamp(k.selectedSection+delta, 0, len(k.entries)-1)
+	k.selectedSection = nudgePaneSelection(k.selectedSection, delta, len(k.entries))
 	if previous != k.selectedSection {
 		k.componentScroll = 0
 	}
@@ -201,15 +192,14 @@ func (k KnowledgeTab) nudgeActivePane(delta int) KnowledgeTab {
 func (k KnowledgeTab) pageActivePane(direction int) KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
 		page := max(3, k.componentViewportHeight()-2)
-		k.componentScroll = clamp(k.componentScroll+(direction*page), 0, k.componentMaxScroll())
-		return k
-	}
-	if len(k.entries) == 0 {
+		innerWidth, innerHeight := k.componentInnerDimensions()
+		lines := k.buildComponentLines(innerWidth)
+		k.componentScroll = clampPaneScroll(k.componentScroll+(direction*page), len(lines), innerHeight)
 		return k
 	}
 	page := max(1, k.sectionPageSize())
 	previous := k.selectedSection
-	k.selectedSection = clamp(k.selectedSection+(direction*page), 0, len(k.entries)-1)
+	k.selectedSection = pagePaneSelection(k.selectedSection, direction*page, len(k.entries))
 	if previous != k.selectedSection {
 		k.componentScroll = 0
 	}
@@ -230,7 +220,9 @@ func (k KnowledgeTab) moveActivePaneHome() KnowledgeTab {
 
 func (k KnowledgeTab) moveActivePaneEnd() KnowledgeTab {
 	if k.activePane == knowledgePaneComponents {
-		k.componentScroll = k.componentMaxScroll()
+		innerWidth, innerHeight := k.componentInnerDimensions()
+		lines := k.buildComponentLines(innerWidth)
+		k.componentScroll = clampPaneScroll(len(lines), len(lines), innerHeight)
 		return k
 	}
 	if len(k.entries) > 0 && k.selectedSection != len(k.entries)-1 {
@@ -242,10 +234,10 @@ func (k KnowledgeTab) moveActivePaneEnd() KnowledgeTab {
 
 func (k KnowledgeTab) view(width, height int, selectedClass string) string {
 	if k.loading && !k.loaded {
-		return dimStyle.Render("Loading learned sections…")
+		return renderSkeleton(width, height)
 	}
 	if !k.loaded && !k.loading {
-		return dimStyle.Render("Loading learned sections…")
+		return renderSkeleton(width, height)
 	}
 	if k.err != nil {
 		return errorStyle.Render("Error loading learned sections: " + k.err.Error())
@@ -263,16 +255,17 @@ func (k KnowledgeTab) view(width, height int, selectedClass string) string {
 	}
 	const metaHeight = 2
 	metaLine1 := truncateWidth(fmt.Sprintf("%s %d  %s %d  %s %s", labelStyle.Render("Sections:"), len(k.entries), labelStyle.Render("Components:"), k.totalComponentsCount, labelStyle.Render("Selected class:"), classLabel), width)
-	metaLine2 := truncateWidth(fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), k.activePane.label(), dimStyle.Render("h/l switch pane  •  up/down scroll  •  r refresh")), width)
+	metaLine2 := truncateWidth(fmt.Sprintf("%s %s", labelStyle.Render("Focus:"), k.activePane.label()), width)
 	meta := metaLine1 + "\n" + metaLine2
-	layout := knowledgeLayoutFor(width, height, metaHeight, k.activePane)
+	layout := splitPaneLayoutFor(knowledgeSplitConfig(), width, height, metaHeight, k.activePane == knowledgePaneComponents)
 	leftPane := k.renderSectionsPane(layout.leftWidth, layout.leftHeight)
 	rightPane := k.renderComponentsPane(layout.rightWidth, layout.rightHeight)
 
+	constrain := lipgloss.NewStyle().Width(width).MaxWidth(width)
 	if layout.stacked {
-		return meta + "\n" + lipgloss.JoinVertical(lipgloss.Left, leftPane, rightPane)
+		return constrain.Render(meta + "\n" + lipgloss.JoinVertical(lipgloss.Left, leftPane, rightPane))
 	}
-	return meta + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane)
+	return constrain.Render(meta + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane))
 }
 
 func (k KnowledgeTab) renderSectionsPane(width, height int) string {
@@ -281,42 +274,11 @@ func (k KnowledgeTab) renderSectionsPane(width, height int) string {
 	contentHeight := max(2, height-style.GetVerticalFrameSize())
 	innerHeight := max(1, contentHeight-1)
 
-	contentLines := []string{}
-	pageSize := max(1, innerHeight/knowledgeSectionRowHeight)
-	start := 0
-	if k.selectedSection >= pageSize {
-		start = k.selectedSection - pageSize + 1
-		if k.selectedSection < len(k.entries)-1 {
-			centered := k.selectedSection - (pageSize / 2)
-			if centered > 0 {
-				start = centered
-			}
-		}
+	items := make([]string, len(k.entries))
+	for i, entry := range k.entries {
+		items[i] = k.renderSectionRow(entry, innerWidth, i == k.selectedSection)
 	}
-	maxStart := max(0, len(k.entries)-pageSize)
-	start = clamp(start, 0, maxStart)
-	end := min(len(k.entries), start+pageSize)
-
-	for i := start; i < end; i++ {
-		selected := i == k.selectedSection
-		contentLines = append(contentLines, strings.Split(k.renderSectionRow(k.entries[i], innerWidth, selected), "\n")...)
-	}
-	for len(contentLines) < innerHeight {
-		contentLines = append(contentLines, "")
-	}
-	if len(contentLines) > innerHeight {
-		contentLines = contentLines[:innerHeight]
-	}
-
-	body := strings.Join(contentLines, "\n")
-	title := sectionTitleStyle.Render("Sections")
-	content := lipgloss.NewStyle().
-		Width(innerWidth).
-		MaxWidth(innerWidth).
-		Height(contentHeight).
-		MaxHeight(contentHeight).
-		Render(title + "\n" + body)
-	return style.Render(content)
+	return renderListPane(items, k.selectedSection, knowledgeSectionRowHeight, innerWidth, innerHeight, style, "Sections", "")
 }
 
 func (k KnowledgeTab) renderSectionRow(entry knowledgeSectionEntry, width int, selected bool) string {
@@ -346,25 +308,7 @@ func (k KnowledgeTab) renderComponentsPane(width, height int) string {
 	innerHeight := max(1, contentHeight-1)
 
 	lines := k.buildComponentLines(innerWidth)
-	maxScroll := 0
-	if len(lines) > innerHeight {
-		maxScroll = len(lines) - innerHeight
-	}
-	start := clamp(k.componentScroll, 0, maxScroll)
-	end := min(len(lines), start+innerHeight)
-	visible := append([]string{}, lines[start:end]...)
-	for len(visible) < innerHeight {
-		visible = append(visible, "")
-	}
-
-	title := sectionTitleStyle.Render("Components")
-	content := lipgloss.NewStyle().
-		Width(innerWidth).
-		MaxWidth(innerWidth).
-		Height(contentHeight).
-		MaxHeight(contentHeight).
-		Render(title + "\n" + strings.Join(visible, "\n"))
-	return style.Render(content)
+	return renderScrollPane(lines, k.componentScroll, innerWidth, innerHeight, style, "Components", "")
 }
 
 func (k KnowledgeTab) buildComponentLines(width int) []string {
@@ -421,18 +365,6 @@ func (k KnowledgeTab) currentSection() (knowledgeSectionEntry, bool) {
 	return k.entries[k.selectedSection], true
 }
 
-func (k KnowledgeTab) componentMaxScroll() int {
-	innerWidth, innerHeight := k.componentInnerDimensions()
-	if innerWidth <= 0 || innerHeight <= 0 {
-		return 0
-	}
-	lines := k.buildComponentLines(innerWidth)
-	if len(lines) <= innerHeight {
-		return 0
-	}
-	return len(lines) - innerHeight
-}
-
 func (k KnowledgeTab) sectionPageSize() int {
 	return max(1, k.sectionViewportHeight()/knowledgeSectionRowHeight)
 }
@@ -451,7 +383,7 @@ func (k KnowledgeTab) componentInnerDimensions() (int, int) {
 	if k.width <= 0 || k.height <= 0 {
 		return 0, 0
 	}
-	layout := knowledgeLayoutFor(k.width, k.height, 3, k.activePane)
+	layout := splitPaneLayoutFor(knowledgeSplitConfig(), k.width, k.height, 3, k.activePane == knowledgePaneComponents)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(14, layout.rightWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(2, layout.rightHeight-style.GetVerticalFrameSize())
@@ -463,7 +395,7 @@ func (k KnowledgeTab) sectionInnerDimensions() (int, int) {
 	if k.width <= 0 || k.height <= 0 {
 		return 0, 0
 	}
-	layout := knowledgeLayoutFor(k.width, k.height, 3, k.activePane)
+	layout := splitPaneLayoutFor(knowledgeSplitConfig(), k.width, k.height, 3, k.activePane == knowledgePaneComponents)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(12, layout.leftWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(2, layout.leftHeight-style.GetVerticalFrameSize())
@@ -471,52 +403,14 @@ func (k KnowledgeTab) sectionInnerDimensions() (int, int) {
 	return innerWidth, innerHeight
 }
 
-type knowledgeLayout struct {
-	stacked     bool
-	leftWidth   int
-	rightWidth  int
-	leftHeight  int
-	rightHeight int
-}
-
-func knowledgeLayoutFor(width, height, metaHeight int, activePane knowledgePane) knowledgeLayout {
-	if width <= 0 || height <= 0 {
-		return knowledgeLayout{}
-	}
-
-	paneHeight := max(8, height-metaHeight-1)
-	leftWidth := clamp(width/3, 20, max(20, width-knowledgeSplitMinRightWidth-1))
-	if activePane == knowledgePaneComponents {
-		leftWidth = clamp(knowledgeSidebarCompactWidth, 20, max(20, width-knowledgeSplitMinRightWidth-1))
-	}
-	rightWidth := width - leftWidth - 1
-	canSplit := width >= knowledgeSplitMinTotalWidth && rightWidth >= knowledgeSplitMinRightWidth
-	if canSplit {
-		return knowledgeLayout{
-			stacked:     false,
-			leftWidth:   leftWidth,
-			rightWidth:  rightWidth,
-			leftHeight:  paneHeight,
-			rightHeight: paneHeight,
-		}
-	}
-
-	leftHeight := max(4, paneHeight/3)
-	rightHeight := max(4, paneHeight-leftHeight)
-	if leftHeight+rightHeight > paneHeight {
-		rightHeight = paneHeight - leftHeight
-	}
-	if rightHeight < 4 {
-		rightHeight = 4
-		leftHeight = max(4, paneHeight-rightHeight)
-	}
-
-	return knowledgeLayout{
-		stacked:     true,
-		leftWidth:   width,
-		rightWidth:  width,
-		leftHeight:  leftHeight,
-		rightHeight: rightHeight,
+func knowledgeSplitConfig() splitPaneConfig {
+	return splitPaneConfig{
+		minTotalWidth:    knowledgeSplitMinTotalWidth,
+		minRightWidth:    knowledgeSplitMinRightWidth,
+		sidebarWidth:     knowledgeSidebarCompactWidth,
+		leftFraction:     3,
+		minLeftWidth:     20,
+		minStackedHeight: 4,
 	}
 }
 
@@ -527,22 +421,13 @@ func (p knowledgePane) label() string {
 	return "sections"
 }
 
-func knowledgeMetricsFromHistory(history []state.QuestionHistoryEntry) knowledgeQuizMetrics {
-	metrics := knowledgeQuizMetrics{Attempts: len(history)}
-	for _, item := range history {
-		if item.Correct {
-			metrics.Correct++
-		} else {
-			metrics.Incorrect++
-		}
-		if item.AnsweredAt.After(metrics.LastAnswered) {
-			metrics.LastAnswered = item.AnsweredAt
-		}
+func (k KnowledgeTab) helpKeys() []KeyBinding {
+	return []KeyBinding{
+		{Key: "h/l", Desc: "panes"},
+		{Key: "↑/↓", Desc: "select"},
+		{Key: "PgUp/PgDn", Desc: "page"},
+		{Key: "Enter", Desc: "expand"},
 	}
-	if metrics.Attempts > 0 {
-		metrics.Accuracy = float64(metrics.Correct) / float64(metrics.Attempts)
-	}
-	return metrics
 }
 
 func aggregateSectionMetrics(section state.Section, components []state.Component) knowledgeQuizMetrics {
@@ -587,14 +472,6 @@ func knowledgeDetailedMetrics(metrics knowledgeQuizMetrics) string {
 	return fmt.Sprintf("%d attempts  •  %d correct  •  %.0f%% accuracy  •  last %s", metrics.Attempts, metrics.Correct, metrics.Accuracy*100, last)
 }
 
-func emptyFallback(value, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
 func knowledgeWrapTextLines(text string, width int) []string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -604,24 +481,3 @@ func knowledgeWrapTextLines(text string, width int) []string {
 	return strings.Split(strings.ReplaceAll(rendered, "\r\n", "\n"), "\n")
 }
 
-func knowledgePaneBorderStyle(active bool) lipgloss.Style {
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("238")).
-		Padding(0, 1)
-	if active {
-		style = style.BorderForeground(lipgloss.Color("244"))
-	}
-	return style
-}
-
-func knowledgeSectionRowStyle(selected, active bool) lipgloss.Style {
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	if selected {
-		style = style.Background(lipgloss.Color("236")).Foreground(lipgloss.Color("230"))
-	}
-	if selected && active {
-		style = style.Bold(true)
-	}
-	return style
-}

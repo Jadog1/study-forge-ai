@@ -135,12 +135,15 @@ type quizDashboardSectionView struct {
 	Lines   []string
 }
 
-type quizDashboardLayout struct {
-	stacked     bool
-	leftWidth   int
-	rightWidth  int
-	leftHeight  int
-	rightHeight int
+func quizDashboardSplitConfig() splitPaneConfig {
+	return splitPaneConfig{
+		minTotalWidth:    quizDashboardMinSplitWidth,
+		minRightWidth:    quizDashboardMinRightWidth,
+		sidebarWidth:     quizDashboardSidebarCompactWidth,
+		leftFraction:     3,
+		minLeftWidth:     22,
+		minStackedHeight: 6,
+	}
 }
 
 func (q QuizDashboardTab) startLoading() QuizDashboardTab {
@@ -182,10 +185,12 @@ func (q QuizDashboardTab) update(msg tea.Msg) (QuizDashboardTab, string, tea.Cmd
 
 func (q QuizDashboardTab) nudgeActivePane(delta int) QuizDashboardTab {
 	if q.activePane == quizDashboardPaneDetails {
-		q.detailScroll = clamp(q.detailScroll+delta, 0, q.detailMaxScroll())
+		innerWidth, innerHeight := q.detailInnerDimensions()
+		lines := q.detailLinesForScroll(innerWidth)
+		q.detailScroll = clampPaneScroll(q.detailScroll+delta, len(lines), innerHeight)
 		return q
 	}
-	q.selectedSection = clamp(q.selectedSection+delta, 0, q.sectionCount()-1)
+	q.selectedSection = nudgePaneSelection(q.selectedSection, delta, q.sectionCount())
 	q.detailScroll = 0
 	return q
 }
@@ -193,11 +198,13 @@ func (q QuizDashboardTab) nudgeActivePane(delta int) QuizDashboardTab {
 func (q QuizDashboardTab) pageActivePane(direction int) QuizDashboardTab {
 	if q.activePane == quizDashboardPaneDetails {
 		page := max(3, q.detailViewportHeight()-2)
-		q.detailScroll = clamp(q.detailScroll+(direction*page), 0, q.detailMaxScroll())
+		innerWidth, innerHeight := q.detailInnerDimensions()
+		lines := q.detailLinesForScroll(innerWidth)
+		q.detailScroll = clampPaneScroll(q.detailScroll+(direction*page), len(lines), innerHeight)
 		return q
 	}
 	page := max(1, q.sectionPageSize())
-	q.selectedSection = clamp(q.selectedSection+(direction*page), 0, q.sectionCount()-1)
+	q.selectedSection = pagePaneSelection(q.selectedSection, direction*page, q.sectionCount())
 	q.detailScroll = 0
 	return q
 }
@@ -214,7 +221,9 @@ func (q QuizDashboardTab) moveActivePaneHome() QuizDashboardTab {
 
 func (q QuizDashboardTab) moveActivePaneEnd() QuizDashboardTab {
 	if q.activePane == quizDashboardPaneDetails {
-		q.detailScroll = q.detailMaxScroll()
+		innerWidth, innerHeight := q.detailInnerDimensions()
+		lines := q.detailLinesForScroll(innerWidth)
+		q.detailScroll = clampPaneScroll(len(lines), len(lines), innerHeight)
 		return q
 	}
 	q.selectedSection = q.sectionCount() - 1
@@ -237,10 +246,10 @@ func (q QuizDashboardTab) receive(snapshot *quizDashboardSnapshot, err error) (Q
 
 func (q QuizDashboardTab) view(width, height int, selectedClass string) string {
 	if q.loading && !q.loaded {
-		return dimStyle.Render("Loading quiz dashboard...")
+		return renderSkeleton(width, height)
 	}
 	if !q.loaded && !q.loading {
-		return dimStyle.Render("Loading quiz dashboard...")
+		return renderSkeleton(width, height)
 	}
 	if q.err != nil {
 		return errorStyle.Render("Error loading quiz dashboard: " + q.err.Error())
@@ -251,10 +260,7 @@ func (q QuizDashboardTab) view(width, height int, selectedClass string) string {
 		if body == "" {
 			body = "No quiz history yet. Generate a quiz and sync tracked sessions to populate this dashboard."
 		}
-		return lipgloss.JoinVertical(lipgloss.Left,
-			dimStyle.Render(body),
-			dimStyle.Render("Press r to refresh  •  s to sync tracked quiz sessions"),
-		)
+		return dimStyle.Render(body)
 	}
 
 	sections := buildQuizDashboardSections(projection)
@@ -263,9 +269,9 @@ func (q QuizDashboardTab) view(width, height int, selectedClass string) string {
 
 	headerLines := []string{
 		truncateWidth(fmt.Sprintf("%s %s  •  %s %s", labelStyle.Render("Class filter:"), projection.ClassLabel, labelStyle.Render("Loaded:"), dashboardTimeLabel(projection.LoadedAt)), width),
-		truncateWidth(fmt.Sprintf("%s %s  •  %s", labelStyle.Render("Focus:"), q.activePane.label(), dimStyle.Render("h/l switch pane  •  ↑/↓ scroll  •  PgUp/PgDn jump  •  r refresh  •  s sync")), width),
+		truncateWidth(fmt.Sprintf("%s %s", labelStyle.Render("Focus:"), q.activePane.label()), width),
 	}
-	layout := quizDashboardLayoutFor(width, height, len(headerLines), q.activePane)
+	layout := quizDashboardLayout(width, height, len(headerLines), q.activePane)
 	sectionPane := q.renderSectionsPane(sections, layout.leftWidth, layout.leftHeight, selectedIndex)
 	detailPane := q.renderDetailPane(sections[selectedIndex], layout.rightWidth, layout.rightHeight, detailScroll)
 
@@ -273,7 +279,8 @@ func (q QuizDashboardTab) view(width, height int, selectedClass string) string {
 	if layout.stacked {
 		body = lipgloss.JoinVertical(lipgloss.Left, sectionPane, detailPane)
 	}
-	return strings.Join(append(headerLines, body), "\n")
+	content := strings.Join(append(headerLines, body), "\n")
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(content)
 }
 
 func (q QuizDashboardTab) renderSectionsPane(sections []quizDashboardSectionView, width, height, selectedIndex int) string {
@@ -281,30 +288,10 @@ func (q QuizDashboardTab) renderSectionsPane(sections []quizDashboardSectionView
 	innerWidth := max(18, width-style.GetHorizontalFrameSize())
 	contentHeight := max(3, height-style.GetVerticalFrameSize())
 	innerHeight := max(1, contentHeight-2)
-	pageSize := max(1, innerHeight/quizDashboardSectionRowHeight)
 
-	start := 0
-	if selectedIndex >= pageSize {
-		start = selectedIndex - pageSize + 1
-		if selectedIndex < len(sections)-1 {
-			centered := selectedIndex - (pageSize / 2)
-			if centered > 0 {
-				start = centered
-			}
-		}
-	}
-	start = clamp(start, 0, max(0, len(sections)-pageSize))
-	end := min(len(sections), start+pageSize)
-
-	contentLines := make([]string, 0, innerHeight)
-	for i := start; i < end; i++ {
-		contentLines = append(contentLines, strings.Split(q.renderSectionRow(sections[i], innerWidth, i == selectedIndex), "\n")...)
-	}
-	for len(contentLines) < innerHeight {
-		contentLines = append(contentLines, "")
-	}
-	if len(contentLines) > innerHeight {
-		contentLines = contentLines[:innerHeight]
+	items := make([]string, len(sections))
+	for i, section := range sections {
+		items[i] = q.renderSectionRow(section, innerWidth, i == selectedIndex)
 	}
 
 	footerHint := "l inspect"
@@ -312,13 +299,7 @@ func (q QuizDashboardTab) renderSectionsPane(sections []quizDashboardSectionView
 		footerHint = "h focus"
 	}
 	footer := dimStyle.Render(truncateWidth(fmt.Sprintf("%d/%d  •  %s", selectedIndex+1, len(sections), footerHint), innerWidth))
-	content := lipgloss.NewStyle().
-		Width(innerWidth).
-		MaxWidth(innerWidth).
-		Height(contentHeight).
-		MaxHeight(contentHeight).
-		Render(sectionTitleStyle.Render("Sections") + "\n" + strings.Join(contentLines, "\n") + "\n" + footer)
-	return style.Render(content)
+	return renderListPane(items, selectedIndex, quizDashboardSectionRowHeight, innerWidth, innerHeight, style, "Sections", footer)
 }
 
 func (q QuizDashboardTab) renderSectionRow(section quizDashboardSectionView, width int, selected bool) string {
@@ -343,16 +324,6 @@ func (q QuizDashboardTab) renderDetailPane(section quizDashboardSectionView, wid
 	innerHeight := max(1, contentHeight-2)
 
 	lines := dashboardWrapLines(section.Lines, innerWidth)
-	if len(lines) == 0 {
-		lines = []string{dimStyle.Render("No details available.")}
-	}
-	maxScroll := max(0, len(lines)-innerHeight)
-	start := clamp(scroll, 0, maxScroll)
-	end := min(len(lines), start+innerHeight)
-	visible := append([]string{}, lines[start:end]...)
-	for len(visible) < innerHeight {
-		visible = append(visible, "")
-	}
 
 	footerHint := "l focus"
 	if q.activePane == quizDashboardPaneDetails {
@@ -360,16 +331,13 @@ func (q QuizDashboardTab) renderDetailPane(section quizDashboardSectionView, wid
 	}
 	footer := fmt.Sprintf("%d line(s)  •  %s", len(lines), footerHint)
 	if len(lines) > innerHeight {
+		start := clampPaneScroll(scroll, len(lines), innerHeight)
+		end := min(len(lines), start+innerHeight)
 		footer = fmt.Sprintf("Showing %d-%d of %d  •  %s", start+1, end, len(lines), footerHint)
 	}
 
-	content := lipgloss.NewStyle().
-		Width(innerWidth).
-		MaxWidth(innerWidth).
-		Height(contentHeight).
-		MaxHeight(contentHeight).
-		Render(sectionTitleStyle.Render(truncateWidth(section.Title, innerWidth)) + "\n" + strings.Join(visible, "\n") + "\n" + dimStyle.Render(truncateWidth(footer, innerWidth)))
-	return style.Render(content)
+	title := truncateWidth(section.Title, innerWidth)
+	return renderScrollPane(lines, scroll, innerWidth, innerHeight, style, title, dimStyle.Render(truncateWidth(footer, innerWidth)))
 }
 
 func (q QuizDashboardTab) sectionCount() int {
@@ -384,7 +352,7 @@ func (q QuizDashboardTab) sectionViewportHeight() int {
 	if q.width <= 0 || q.height <= 0 {
 		return 1
 	}
-	layout := quizDashboardLayoutFor(q.width, q.height, 2, q.activePane)
+	layout := quizDashboardLayout(q.width, q.height, 2, q.activePane)
 	style := knowledgePaneBorderStyle(false)
 	contentHeight := max(3, layout.leftHeight-style.GetVerticalFrameSize())
 	return max(1, contentHeight-2)
@@ -402,7 +370,7 @@ func (q QuizDashboardTab) detailInnerDimensions() (int, int) {
 	if q.width <= 0 || q.height <= 0 {
 		return 0, 0
 	}
-	layout := quizDashboardLayoutFor(q.width, q.height, 2, q.activePane)
+	layout := quizDashboardLayout(q.width, q.height, 2, q.activePane)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(20, layout.rightWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(3, layout.rightHeight-style.GetVerticalFrameSize())
@@ -410,22 +378,23 @@ func (q QuizDashboardTab) detailInnerDimensions() (int, int) {
 	return innerWidth, innerHeight
 }
 
-func (q QuizDashboardTab) detailMaxScroll() int {
+func (q QuizDashboardTab) detailLinesForScroll(innerWidth int) []string {
 	projection := buildQuizDashboardProjection(q.snapshot, "")
 	sections := buildQuizDashboardSections(projection)
 	if len(sections) == 0 {
-		return 0
+		return nil
 	}
 	selectedIndex := clamp(q.selectedSection, 0, len(sections)-1)
-	innerWidth, innerHeight := q.detailInnerDimensions()
-	if innerHeight <= 0 {
-		return 0
+	return dashboardWrapLines(sections[selectedIndex].Lines, innerWidth)
+}
+
+func (q QuizDashboardTab) helpKeys() []KeyBinding {
+	return []KeyBinding{
+		{Key: "h/l", Desc: "panes"},
+		{Key: "↑/↓", Desc: "select"},
+		{Key: "s", Desc: "sync"},
+		{Key: "r", Desc: "refresh"},
 	}
-	lines := dashboardWrapLines(sections[selectedIndex].Lines, innerWidth)
-	if len(lines) <= innerHeight {
-		return 0
-	}
-	return len(lines) - innerHeight
 }
 
 func buildQuizDashboardSections(projection quizDashboardProjection) []quizDashboardSectionView {
@@ -615,72 +584,20 @@ func dashboardWrapLines(lines []string, width int) []string {
 	return wrapped
 }
 
-func dashboardTruncateLines(lines []string, width int) []string {
-	if width <= 0 {
-		return nil
-	}
-	trimmed := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			trimmed = append(trimmed, "")
-			continue
-		}
-		trimmed = append(trimmed, truncateWidth(line, width))
-	}
-	return trimmed
-}
+
 
 func quizDashboardDetailMaxScrollFor(section quizDashboardSectionView, width, height int, activePane quizDashboardPane) int {
-	layout := quizDashboardLayoutFor(width, height, 2, activePane)
+	layout := quizDashboardLayout(width, height, 2, activePane)
 	style := knowledgePaneBorderStyle(false)
 	innerWidth := max(20, layout.rightWidth-style.GetHorizontalFrameSize())
 	contentHeight := max(3, layout.rightHeight-style.GetVerticalFrameSize())
 	innerHeight := max(1, contentHeight-2)
 	lines := dashboardWrapLines(section.Lines, innerWidth)
-	if len(lines) <= innerHeight {
-		return 0
-	}
-	return len(lines) - innerHeight
+	return clampPaneScroll(len(lines), len(lines), innerHeight)
 }
 
-func quizDashboardLayoutFor(width, height, metaHeight int, activePane quizDashboardPane) quizDashboardLayout {
-	if width <= 0 || height <= 0 {
-		return quizDashboardLayout{}
-	}
-
-	paneHeight := max(8, height-metaHeight-1)
-	leftWidth := clamp(width/3, 22, max(22, width-quizDashboardMinRightWidth-1))
-	if activePane == quizDashboardPaneDetails {
-		leftWidth = clamp(quizDashboardSidebarCompactWidth, 22, max(22, width-quizDashboardMinRightWidth-1))
-	}
-	rightWidth := width - leftWidth - 1
-	canSplit := width >= quizDashboardMinSplitWidth && rightWidth >= quizDashboardMinRightWidth
-	if canSplit {
-		return quizDashboardLayout{
-			leftWidth:   leftWidth,
-			rightWidth:  rightWidth,
-			leftHeight:  paneHeight,
-			rightHeight: paneHeight,
-		}
-	}
-
-	leftHeight := max(6, paneHeight/3)
-	rightHeight := max(6, paneHeight-leftHeight)
-	if leftHeight+rightHeight > paneHeight {
-		rightHeight = paneHeight - leftHeight
-	}
-	if rightHeight < 6 {
-		rightHeight = 6
-		leftHeight = max(6, paneHeight-rightHeight)
-	}
-
-	return quizDashboardLayout{
-		stacked:     true,
-		leftWidth:   width,
-		rightWidth:  width,
-		leftHeight:  leftHeight,
-		rightHeight: rightHeight,
-	}
+func quizDashboardLayout(width, height, metaHeight int, activePane quizDashboardPane) splitPaneLayout {
+	return splitPaneLayoutFor(quizDashboardSplitConfig(), width, height, metaHeight, activePane == quizDashboardPaneDetails)
 }
 
 func (p quizDashboardPane) label() string {
@@ -711,10 +628,8 @@ func buildQuizDashboardProjection(snapshot *quizDashboardSnapshot, selectedClass
 	tracked := filterDashboardTracked(snapshot.Tracked, projection.SelectedClass)
 
 	sectionTitleByID := make(map[string]string, len(sections))
-	sectionClassByID := make(map[string]string, len(sections))
 	for _, section := range sections {
 		sectionTitleByID[strings.TrimSpace(section.ID)] = strings.TrimSpace(section.Title)
-		sectionClassByID[strings.TrimSpace(section.ID)] = strings.TrimSpace(section.Class)
 	}
 
 	practicedSections := make(map[string]bool)

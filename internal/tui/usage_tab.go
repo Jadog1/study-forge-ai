@@ -151,12 +151,19 @@ func (u UsageTab) update(msg tea.Msg) (UsageTab, tea.Cmd) {
 	return u, nil
 }
 
+func (u UsageTab) helpKeys() []KeyBinding {
+	return []KeyBinding{
+		{Key: "↑/↓", Desc: "scroll"},
+		{Key: "r", Desc: "refresh"},
+	}
+}
+
 func (u UsageTab) view(width, height int, cfg *config.Config) string {
 	if !u.loaded && !u.loading {
-		return dimStyle.Render("Loading usage data…")
+		return renderSkeleton(width, height)
 	}
 	if u.loading && !u.loaded {
-		return dimStyle.Render("Loading usage data…")
+		return renderSkeleton(width, height)
 	}
 	if u.err != nil {
 		return errorStyle.Render("Error loading usage data: " + u.err.Error())
@@ -165,15 +172,13 @@ func (u UsageTab) view(width, height int, cfg *config.Config) string {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			dimStyle.Render("No usage recorded yet."),
 			dimStyle.Render("Run 'sfa ingest' to start tracking usage."),
-			"",
-			dimStyle.Render("Press r to refresh  •  f/F change time filter  •  l to view ledger."),
 		)
 	}
 
 	if u.viewMode == usageViewLedger {
 		return u.viewLedger(width, height, cfg)
 	}
-	return u.viewSummary(width, cfg)
+	return u.viewSummary(width, height, cfg)
 }
 
 func (u UsageTab) applyFilter() UsageTab {
@@ -237,14 +242,12 @@ func (u UsageTab) ledgerMaxScroll() int {
 	return len(u.cachedLines) - 1
 }
 
-func (u UsageTab) viewSummary(width int, cfg *config.Config) string {
-	var b strings.Builder
+func (u UsageTab) viewSummary(width, height int, cfg *config.Config) string {
 	filterLabel := u.filter.label()
 	if u.filter != usageFilterAll {
 		filterLabel = selectedStyle.Render(filterLabel)
 	}
 
-	// Summary section
 	costStr := dimStyle.Render("(no pricing — run sfa pricing detect)")
 	if u.totals.TotalCostUSD > 0 {
 		costStr = successStyle.Render(fmt.Sprintf("$%.6f", u.totals.TotalCostUSD))
@@ -261,9 +264,11 @@ func (u UsageTab) viewSummary(width int, cfg *config.Config) string {
 		fmt.Sprintf("  %s  %s", labelStyle.Render("Total cost:   "), costStr),
 		fmt.Sprintf("  %s  %s", labelStyle.Render("Last updated: "), lastUpdated),
 	}, "\n")
-	b.WriteString(renderSection("Summary", summaryBody, width))
 
-	// Per-model breakdown
+	sections := []SectionDef{
+		{Title: "Summary", Body: summaryBody},
+	}
+
 	if len(u.totals.ByModel) > 0 {
 		keys := make([]string, 0, len(u.totals.ByModel))
 		for k := range u.totals.ByModel {
@@ -275,7 +280,6 @@ func (u UsageTab) viewSummary(width int, cfg *config.Config) string {
 		for _, k := range keys {
 			t := u.totals.ByModel[k]
 
-			// Extract just the model name (strip "provider:" prefix) for pricing lookup.
 			modelName := k
 			if idx := strings.Index(k, ":"); idx >= 0 {
 				modelName = k[idx+1:]
@@ -299,10 +303,13 @@ func (u UsageTab) viewSummary(width int, cfg *config.Config) string {
 			)
 			rows.WriteString(row + "\n")
 		}
-		b.WriteString(renderSection("Per-Model Breakdown", strings.TrimRight(rows.String(), "\n"), width))
+		sections = append(sections, SectionDef{
+			Title: "Per-Model Breakdown",
+			Body:  strings.TrimRight(rows.String(), "\n"),
+			Flex:  true,
+		})
 	}
 
-	// Pricing hint for unpriced models.
 	if cfg != nil && len(u.totals.ByModel) > 0 {
 		var unknown []string
 		for k := range u.totals.ByModel {
@@ -319,12 +326,11 @@ func (u UsageTab) viewSummary(width int, cfg *config.Config) string {
 			hint := "Set prices with: sfa pricing set <model> <input-per-million> <output-per-million>\n" +
 				"Run: sfa pricing detect\n\n" +
 				"Unpriced: " + strings.Join(unknown, ", ")
-			b.WriteString(renderSection("Pricing Needed", warnStyle.Render(hint), width))
+			sections = append(sections, SectionDef{Title: "Pricing Needed", Body: warnStyle.Render(hint)})
 		}
 	}
 
-	b.WriteString("\n" + dimStyle.Render("Press r to refresh  •  f/F change time filter  •  l for ledger view"))
-	return b.String()
+	return renderSections(sections, width, height)
 }
 
 func (u UsageTab) viewLedger(width, height int, cfg *config.Config) string {
@@ -338,12 +344,6 @@ func (u UsageTab) viewLedger(width, height int, cfg *config.Config) string {
 		return dimStyle.Render("No usage events in this time period.")
 	}
 
-	// Calculate available space for ledger
-	ledgerHeight := height - 6 // Leave room for header, footer, filter info
-	if ledgerHeight < 3 {
-		ledgerHeight = 3
-	}
-
 	var b strings.Builder
 
 	// Filter info
@@ -351,18 +351,30 @@ func (u UsageTab) viewLedger(width, height int, cfg *config.Config) string {
 	if u.filter != usageFilterAll {
 		filterLabel = selectedStyle.Render(filterLabel)
 	}
-	b.WriteString(fmt.Sprintf("  %s: %s  •  %d events total\n\n", labelStyle.Render("Time filter"), filterLabel, len(u.filteredEvents)))
+	filterInfo := fmt.Sprintf("  %s: %s  •  %d events total\n\n", labelStyle.Render("Time filter"), filterLabel, len(u.filteredEvents))
+	b.WriteString(filterInfo)
 
-	// Validate scroll position
-	if u.scrollPos > len(u.cachedLines)-1 {
-		u.scrollPos = len(u.cachedLines) - 1
+	// Dynamically compute ledger height from surrounding content.
+	borderStyle := lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
+	filterHeight := lipgloss.Height(filterInfo)
+	borderVPad := borderStyle.GetVerticalFrameSize()
+	const footerLines = 1 // scroll indicator
+	ledgerHeight := height - filterHeight - borderVPad - footerLines
+	if ledgerHeight < 3 {
+		ledgerHeight = 3
 	}
-	if u.scrollPos < 0 {
-		u.scrollPos = 0
+
+	// Use local copy to avoid mutating value receiver.
+	scrollPos := u.scrollPos
+	if scrollPos > len(u.cachedLines)-1 {
+		scrollPos = len(u.cachedLines) - 1
+	}
+	if scrollPos < 0 {
+		scrollPos = 0
 	}
 
 	// Calculate visible range
-	startLine := u.scrollPos
+	startLine := scrollPos
 	endLine := startLine + ledgerHeight
 	if endLine > len(u.cachedLines) {
 		endLine = len(u.cachedLines)
@@ -391,24 +403,20 @@ func (u UsageTab) viewLedger(width, height int, cfg *config.Config) string {
 		content = dimStyle.Render("(no events)")
 	}
 
-	// Render with border
-	borderStyle := lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
-	renderedContent := borderStyle.Width(width - 4).Render(content)
+	renderedContent := borderStyle.Width(width - 4).MaxWidth(width - 4).Render(content)
 	b.WriteString(renderedContent)
-
-	b.WriteString("\n" + dimStyle.Render("Press l to summary  •  f/F filter  •  ↑↓ scroll  •  PgUp/PgDn  •  Home/End"))
 
 	// Add scroll indicator if needed
 	if len(u.cachedLines) > ledgerHeight {
 		scrollPercent := 0
 		if len(u.cachedLines) > ledgerHeight {
-			scrollPercent = int((float64(u.scrollPos) / float64(len(u.cachedLines)-ledgerHeight)) * 100)
+			scrollPercent = int((float64(scrollPos) / float64(len(u.cachedLines)-ledgerHeight)) * 100)
 		}
 		scrollStr := fmt.Sprintf("  [%d%%]", scrollPercent)
 		b.WriteString("\n" + dimStyle.Render(scrollStr))
 	}
 
-	return b.String()
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(b.String())
 }
 
 func (u UsageTab) formatLedgerEvent(event state.UsageEvent, maxWidth int, cfg *config.Config) string {

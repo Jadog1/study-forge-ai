@@ -1,0 +1,240 @@
+package chat
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/plugins"
+)
+
+// StreamEventKind classifies streaming events emitted during chat generation.
+type StreamEventKind string
+
+const (
+	StreamEventChunk       StreamEventKind = "chunk"
+	StreamEventActionStart StreamEventKind = "action-start"
+	StreamEventActionDone  StreamEventKind = "action-done"
+)
+
+// StreamEvent carries a single streaming event from the chat agent loop.
+type StreamEvent struct {
+	Kind   StreamEventKind
+	Text   string
+	Label  string
+	Detail string
+	Err    error
+}
+
+// AskStream sends a prompt and emits the final reply in chunks.
+// Tool-aware chat resolves any intermediate tool calls before chunking output.
+func AskStream(provider plugins.AIProvider, cfg *config.Config, className, prompt string, onEvent func(StreamEvent) error) error {
+	fullPrompt, err := buildPrompt(cfg, className, prompt)
+	if err != nil {
+		return err
+	}
+	_, err = runAgent(provider, cfg, className, fullPrompt, onEvent)
+	return err
+}
+
+func generateAgentResponse(provider plugins.AIProvider, prompt string, onEvent func(StreamEvent) error) (string, bool, plugins.GenerateResult, error) {
+	if onEvent == nil {
+		text, result, err := chatGenerateWithMetadata(provider, prompt)
+		return text, false, result, err
+	}
+
+	streamer, ok := provider.(plugins.StreamingAIProvider)
+	if !ok {
+		text, result, err := chatGenerateWithMetadata(provider, prompt)
+		return text, false, result, err
+	}
+	if usageStreamer, ok := provider.(plugins.StreamingUsageAwareAIProvider); ok {
+		result, err := streamProviderResponseWithMetadata(usageStreamer, prompt, onEvent)
+		if err != nil {
+			return "", true, plugins.GenerateResult{}, err
+		}
+		return result.Text, true, result, nil
+	}
+
+	resp, err := streamProviderResponse(streamer, prompt, onEvent)
+	if err != nil {
+		return "", true, plugins.GenerateResult{}, err
+	}
+	inputTokens := len(strings.Fields(prompt))
+	outputTokens := len(strings.Fields(resp))
+	result := plugins.GenerateResult{
+		Text: resp,
+		Usage: plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider: provider.Name(),
+			Model:    provider.Model(),
+			At:       time.Now().UTC(),
+		},
+	}
+	return resp, true, result, nil
+}
+
+func chatGenerateWithMetadata(provider plugins.AIProvider, prompt string) (string, plugins.GenerateResult, error) {
+	if usageAware, ok := provider.(plugins.UsageAwareAIProvider); ok {
+		result, err := usageAware.GenerateWithMetadata(prompt)
+		if err != nil {
+			return "", plugins.GenerateResult{}, err
+		}
+		if result.Metadata.At.IsZero() {
+			result.Metadata.At = time.Now().UTC()
+		}
+		if result.Metadata.Provider == "" {
+			result.Metadata.Provider = provider.Name()
+		}
+		return result.Text, result, nil
+	}
+	text, err := provider.Generate(prompt)
+	if err != nil {
+		return "", plugins.GenerateResult{}, err
+	}
+	inputTokens := len(strings.Fields(prompt))
+	outputTokens := len(strings.Fields(text))
+	return text, plugins.GenerateResult{
+		Text: text,
+		Usage: plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		Metadata: plugins.CallMetadata{
+			Provider: provider.Name(),
+			Model:    provider.Model(),
+			At:       time.Now().UTC(),
+		},
+	}, nil
+}
+
+func streamProviderResponse(provider plugins.StreamingAIProvider, prompt string, onEvent func(StreamEvent) error) (string, error) {
+	return streamProviderResponseWith(prompt, onEvent, func(onChunk func(string) error) error {
+		return provider.StreamGenerate(prompt, onChunk)
+	})
+}
+
+func streamProviderResponseWithMetadata(provider plugins.StreamingUsageAwareAIProvider, prompt string, onEvent func(StreamEvent) error) (plugins.GenerateResult, error) {
+	var result plugins.GenerateResult
+	resp, err := streamProviderResponseWith(prompt, onEvent, func(onChunk func(string) error) error {
+		streamResult, streamErr := provider.StreamGenerateWithMetadata(prompt, onChunk)
+		result = streamResult
+		return streamErr
+	})
+	if err != nil {
+		return plugins.GenerateResult{}, err
+	}
+	if strings.TrimSpace(result.Text) == "" {
+		result.Text = resp
+	}
+	if result.Usage.TotalTokens == 0 && (result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0) {
+		inputTokens := len(strings.Fields(prompt))
+		outputTokens := len(strings.Fields(result.Text))
+		result.Usage = plugins.TokenUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		}
+	}
+	if result.Metadata.Provider == "" {
+		result.Metadata.Provider = provider.Name()
+	}
+	if result.Metadata.Model == "" {
+		result.Metadata.Model = provider.Model()
+	}
+	if result.Metadata.At.IsZero() {
+		result.Metadata.At = time.Now().UTC()
+	}
+	return result, nil
+}
+
+func streamProviderResponseWith(prompt string, onEvent func(StreamEvent) error, streamFn func(onChunk func(string) error) error) (string, error) {
+	var full strings.Builder
+	var pending strings.Builder
+	released := false
+
+	err := streamFn(func(part string) error {
+		if part == "" {
+			return nil
+		}
+
+		full.WriteString(part)
+		if released {
+			return onEvent(StreamEvent{Kind: StreamEventChunk, Text: part})
+		}
+
+		pending.WriteString(part)
+		if looksLikeToolCallPrefix(pending.String()) {
+			return nil
+		}
+
+		released = true
+		buffered := pending.String()
+		pending.Reset()
+		return onEvent(StreamEvent{Kind: StreamEventChunk, Text: buffered})
+	})
+	if err != nil {
+		return "", err
+	}
+
+	resp := full.String()
+	if !released && !isToolCallResponse(resp) {
+		buffered := pending.String()
+		if buffered != "" {
+			if err := onEvent(StreamEvent{Kind: StreamEventChunk, Text: buffered}); err != nil {
+				return "", fmt.Errorf("chat stream callback: %w", err)
+			}
+		}
+	}
+	return resp, nil
+}
+
+func looksLikeToolCallPrefix(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, toolCallStartTag) {
+		return true
+	}
+	return strings.HasPrefix(toolCallStartTag, trimmed)
+}
+
+func isToolCallResponse(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), toolCallStartTag)
+}
+
+func emitChunked(text string, size int, onEvent func(StreamEvent) error) error {
+	for _, chunk := range chunkText(text, size) {
+		if err := onEvent(StreamEvent{Kind: StreamEventChunk, Text: chunk}); err != nil {
+			return fmt.Errorf("chat stream callback: %w", err)
+		}
+	}
+	if text == "" {
+		if err := onEvent(StreamEvent{Kind: StreamEventChunk, Text: ""}); err != nil {
+			return fmt.Errorf("chat stream callback: %w", err)
+		}
+	}
+	return nil
+}
+
+func chunkText(s string, size int) []string {
+	if size <= 0 || len(s) <= size {
+		return []string{s}
+	}
+	chunks := make([]string, 0, (len(s)+size-1)/size)
+	for len(s) > size {
+		chunks = append(chunks, s[:size])
+		s = s[size:]
+	}
+	if s != "" {
+		chunks = append(chunks, s)
+	}
+	return chunks
+}

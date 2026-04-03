@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -29,13 +30,26 @@ func Launch() error {
 // ── tea.Model ────────────────────────────────────────────────────────────────
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, m.spin.spinner.Tick)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Window resize is always handled before overlays.
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m = m.resize(wm.Width, wm.Height)
+		return m, nil
+	}
+
+	// Forward spinner ticks so the animation stays alive.
+	if _, ok := msg.(spinner.TickMsg); ok {
+		var spinCmd tea.Cmd
+		m.spin, spinCmd = m.spin.Update(msg)
+		return m, spinCmd
+	}
+
+	// Forward toast tick messages.
+	if _, ok := msg.(toastTickMsg); ok {
+		m.toast = m.toast.Update(msg)
 		return m, nil
 	}
 
@@ -60,8 +74,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if status != "" {
 			m.status = status
 		}
-		m.busy = workflowBusy
+		var busyCmd tea.Cmd
+		m, busyCmd = m.setBusy(workflowBusy, "Running workflow…")
+		return m, tea.Batch(cmd, busyCmd)
+	}
+
+	// Inline editor overlay steals all input when visible.
+	if m.editor.visible {
+		var cmd tea.Cmd
+		m.editor, cmd = m.editor.Update(msg)
+		if !m.editor.visible {
+			m.status = "Editor closed"
+		}
 		return m, cmd
+	}
+
+	// Open editor requests from any tab.
+	if oe, ok := msg.(openEditorMsg); ok {
+		m.editor = m.editor.Open(oe.title, oe.filePath, oe.content, oe.onSave)
+		return m, nil
 	}
 
 	// Cross-cutting async results are routed to the right component
@@ -83,7 +114,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForAIStreamCmd(msg.stream)
 		}
 		if msg.err != nil {
-			m.busy = false
+			m, _ = m.setBusy(false, "")
 			m.status = "Chat request failed"
 			m.chat = m.chat.addError(msg.err.Error())
 			return m, nil
@@ -93,19 +124,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Streaming response…"
 		}
 		if msg.done {
-			m.busy = false
+			m, _ = m.setBusy(false, "")
 			m.status = "Ready"
 			return m, nil
 		}
 		return m, waitForAIStreamCmd(msg.stream)
 
 	case workflowDoneMsg:
-		// Handled by workflow overlay above; this catches any that arrive late.
-		m.busy = false
+		m, _ = m.setBusy(false, "")
 		if msg.err != nil {
 			m.status = "Workflow failed: " + msg.err.Error()
 		} else {
 			m.status = msg.summary
+			var toastCmd tea.Cmd
+			m.toast, toastCmd = showToast(msg.summary, infoBannerStyle)
+			return m, toastCmd
 		}
 		return m, nil
 
@@ -115,6 +148,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Usage load failed"
 		} else {
 			m.status = "Usage refreshed"
+			var toastCmd tea.Cmd
+			m.toast, toastCmd = showToast("Usage refreshed", infoBannerStyle)
+			return m, toastCmd
 		}
 		return m, nil
 
@@ -124,6 +160,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Knowledge load failed"
 		} else {
 			m.status = "Knowledge refreshed"
+			var toastCmd tea.Cmd
+			m.toast, toastCmd = showToast("Knowledge refreshed", infoBannerStyle)
+			return m, toastCmd
 		}
 		return m, nil
 
@@ -133,10 +172,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if status != "" {
 			m.status = status
 		}
+		if msg.err == nil {
+			var toastCmd tea.Cmd
+			m.toast, toastCmd = showToast("Quiz dashboard refreshed", infoBannerStyle)
+			return m, toastCmd
+		}
 		return m, nil
 
 	case trackedSyncDoneMsg:
-		m.busy = false
+		m, _ = m.setBusy(false, "")
 		if msg.err != nil {
 			m.status = "Tracked sync failed: " + msg.err.Error()
 			return m, nil
@@ -145,11 +189,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.report.UnmappedAnswers > 0 {
 			m.status += ", unmapped answers " + strconv.Itoa(msg.report.UnmappedAnswers)
 		}
+		var toastCmd tea.Cmd
+		m.toast, toastCmd = showToast("Tracked sync complete", infoBannerStyle)
 		if m.activeTab == tabQuizDashboard {
 			m.quizDashboard = m.quizDashboard.startLoading()
-			return m, loadQuizDashboardCmd()
+			return m, tea.Batch(toastCmd, loadQuizDashboardCmd())
 		}
-		return m, nil
+		return m, toastCmd
 	}
 
 	// Global key bindings.
@@ -233,9 +279,10 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.chat, prompt, cmd = m.chat.updateInput(msg, m.busy)
 		if prompt != "" {
-			m.busy = true
+			var busyCmd tea.Cmd
+			m, busyCmd = m.setBusy(true, "Contacting model…")
 			m.status = "Contacting model…"
-			return m, askAICmd(m.orc, m.cfg, m.classes.SelectedClass(), prompt)
+			return m, tea.Batch(busyCmd, askAICmd(m.orc, m.cfg, m.classes.SelectedClass(), prompt))
 		}
 		return m, cmd
 
@@ -278,8 +325,9 @@ func (m model) routeToActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if status != "" {
 			m.status = status
 		}
-		m.busy = busy
-		return m, cmd
+		var busyCmd tea.Cmd
+		m, busyCmd = m.setBusy(busy, "Syncing…")
+		return m, tea.Batch(cmd, busyCmd)
 
 	case tabUsage:
 		var cmd tea.Cmd
@@ -320,9 +368,10 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		m.status = "Loading quiz dashboard..."
 		return m, loadQuizDashboardCmd()
 	case "sync-tracked":
-		m.busy = true
+		var busyCmd tea.Cmd
+		m, busyCmd = m.setBusy(true, "Syncing tracked sessions…")
 		m.status = "Syncing tracked quiz sessions..."
-		return m, syncTrackedSessionsCmd()
+		return m, tea.Batch(busyCmd, syncTrackedSessionsCmd())
 	case "usage":
 		m.activeTab = tabUsage
 		m.usage = m.usage.startLoading()
@@ -345,6 +394,18 @@ func (m model) handlePaletteAction(action string) (model, tea.Cmd) {
 		m.orc = orchestrator.NewFallback(m.cfg)
 		m.status = "Provider set to Local/Ollama for this session. Press s in Settings to save."
 	}
+	return m, nil
+}
+
+// setBusy updates the busy flag and synchronizes the spinner.
+// Returns a tea.Cmd that starts the spinner animation when becoming busy.
+func (m model) setBusy(busy bool, label string) (model, tea.Cmd) {
+	m.busy = busy
+	if busy {
+		m.spin = m.spin.Start(label)
+		return m, m.spin.spinner.Tick
+	}
+	m.spin = m.spin.Stop()
 	return m, nil
 }
 
@@ -373,6 +434,42 @@ func (m model) resetFocus() model {
 	return m
 }
 
+// activeHelpKeys returns context-sensitive key bindings for the footer help bar.
+// Overlay states take precedence, then the active tab, and finally global keys.
+func (m model) activeHelpKeys() []KeyBinding {
+	if m.palette.visible {
+		return []KeyBinding{
+			{Key: "↑/↓", Desc: "navigate"},
+			{Key: "Enter", Desc: "select"},
+			{Key: "Esc", Desc: "close"},
+		}
+	}
+	if m.workflow.visible {
+		return []KeyBinding{
+			{Key: "Tab", Desc: "fields"},
+			{Key: "Enter", Desc: "confirm"},
+			{Key: "Esc", Desc: "cancel"},
+		}
+	}
+
+	var keys []KeyBinding
+	switch m.activeTab {
+	case tabChat:
+		keys = m.chat.helpKeys()
+	case tabClasses:
+		keys = m.classes.helpKeys()
+	case tabKnowledge:
+		keys = m.knowledge.helpKeys()
+	case tabQuizDashboard:
+		keys = m.quizDashboard.helpKeys()
+	case tabSettings:
+		keys = m.settings.helpKeys()
+	case tabUsage:
+		keys = m.usage.helpKeys()
+	}
+	return append(keys, globalHelpKeys...)
+}
+
 // ── View ─────────────────────────────────────────────────────────────────────
 
 func (m model) View() string {
@@ -384,8 +481,9 @@ func (m model) View() string {
 			warnBannerStyle.Render("Terminal is too small. Resize to at least 60x18."))
 	}
 
-	availableDocWidth := max(52, m.width-8)
-	labels, showPaletteHint := adaptiveTabLabels(availableDocWidth-headerBarStyle.GetHorizontalFrameSize(), m.activeTab)
+	docWidth := max(52, m.width-4)
+
+	labels, showPaletteHint := adaptiveTabLabels(docWidth-headerBarStyle.GetHorizontalFrameSize(), m.activeTab)
 	tabParts := renderTabParts(labels, m.activeTab)
 	tabsRow := lipgloss.JoinHorizontal(lipgloss.Bottom, tabParts...)
 	headerContent := tabsRow
@@ -393,41 +491,50 @@ func (m model) View() string {
 		headerContent = lipgloss.JoinHorizontal(lipgloss.Bottom, tabsRow, dimStyle.Render("  Ctrl+P actions"))
 	}
 
-	docWidth := clamp(m.width-8, 52, 116)
-	headerNeededWidth := lipgloss.Width(headerContent) + headerBarStyle.GetHorizontalFrameSize()
-	if headerNeededWidth > docWidth {
-		docWidth = min(availableDocWidth, headerNeededWidth)
-	}
-
 	bodyInnerWidth := clamp(docWidth-bodyPanelStyle.GetHorizontalFrameSize(), 24, docWidth)
 	footerWidth := clamp(docWidth-footerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
 	headerWidth := clamp(docWidth-headerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
 	header := headerBarStyle.Width(headerWidth).Render(headerContent)
 
-	// Active tab body
-	// Total vertical chrome: appStyle padding=2, header=lipgloss.Height(header),
-	// bodyPanelStyle borders+padding=4, footer=4  → subtract 10 beyond header height.
+	// Vertical chrome: bodyPanelStyle borders+padding=4, footer=4 → subtract 8 beyond header height.
 	var body string
-	bodyHeight := clamp(m.height-lipgloss.Height(header)-10, 4, m.height-14)
-	switch m.activeTab {
-	case tabChat:
-		body = m.chat.view(bodyInnerWidth, bodyHeight, m.orc.Provider.Name(), m.orc.Provider.Disabled(), m.classes.SelectedClass(), m.busy)
-	case tabClasses:
-		body = m.classes.view(bodyInnerWidth, bodyHeight)
-	case tabKnowledge:
-		body = m.knowledge.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
-	case tabSettings:
-		body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
-	case tabQuizDashboard:
-		body = m.quizDashboard.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
-	case tabUsage:
-		body = m.usage.view(bodyInnerWidth, bodyHeight, m.cfg)
+	bodyHeight := clamp(m.height-lipgloss.Height(header)-8, 4, m.height-12)
+	if m.editor.visible {
+		body = m.editor.View(bodyInnerWidth, bodyHeight)
+	} else {
+		switch m.activeTab {
+		case tabChat:
+			body = m.chat.view(bodyInnerWidth, bodyHeight, m.orc.Provider.Name(), m.orc.Provider.Disabled(), m.classes.SelectedClass(), m.busy)
+		case tabClasses:
+			body = m.classes.view(bodyInnerWidth, bodyHeight)
+		case tabKnowledge:
+			body = m.knowledge.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
+		case tabSettings:
+			body = m.settings.view(bodyInnerWidth, bodyHeight, m.cfg, m.savedCfg)
+		case tabQuizDashboard:
+			body = m.quizDashboard.view(bodyInnerWidth, bodyHeight, m.classes.SelectedClass())
+		case tabUsage:
+			body = m.usage.view(bodyInnerWidth, bodyHeight, m.cfg)
+		}
 	}
+	// Show toast banner between header and body when visible.
+	toastBanner := m.toast.View(bodyInnerWidth)
+	if toastBanner != "" {
+		toastHeight := lipgloss.Height(toastBanner)
+		bodyHeight = max(4, bodyHeight-toastHeight)
+	}
+
 	body = lipgloss.NewStyle().Width(bodyInnerWidth).Height(bodyHeight).MaxHeight(bodyHeight).MaxWidth(bodyInnerWidth).Render(body)
+	if toastBanner != "" {
+		body = lipgloss.JoinVertical(lipgloss.Left, toastBanner, body)
+	}
 	body = bodyPanelStyle.Render(body)
 
 	footerStatusRaw := "Status: " + m.status
-	footerHints := dimStyle.Render("Tab/Shift+Tab switch  •  Ctrl+P actions  •  Esc cancel  •  q quit")
+	if spinView := m.spin.View(); spinView != "" {
+		footerStatusRaw = spinView
+	}
+	footerHints := renderHelpBar(m.activeHelpKeys(), footerWidth-2)
 	footerTone := infoBannerStyle
 	statusText := strings.ToLower(m.status)
 	switch {
@@ -454,7 +561,7 @@ func (m model) View() string {
 			lipgloss.Center, lipgloss.Center,
 			m.workflow.View(m.width, m.height))
 	}
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, mainView)
+	return lipgloss.Place(m.width, m.height, lipgloss.Top, lipgloss.Left, mainView)
 }
 
 func renderTabParts(labels []string, activeTab int) []string {
@@ -498,8 +605,9 @@ func appBodyDimensions(width, height, activeTab int) (int, int) {
 		return 0, 0
 	}
 
-	availableDocWidth := max(52, width-8)
-	labels, showPaletteHint := adaptiveTabLabels(availableDocWidth-headerBarStyle.GetHorizontalFrameSize(), activeTab)
+	docWidth := max(52, width-4)
+
+	labels, showPaletteHint := adaptiveTabLabels(docWidth-headerBarStyle.GetHorizontalFrameSize(), activeTab)
 	tabParts := renderTabParts(labels, activeTab)
 	tabsRow := lipgloss.JoinHorizontal(lipgloss.Bottom, tabParts...)
 	headerContent := tabsRow
@@ -507,15 +615,9 @@ func appBodyDimensions(width, height, activeTab int) (int, int) {
 		headerContent = lipgloss.JoinHorizontal(lipgloss.Bottom, tabsRow, dimStyle.Render("  Ctrl+P actions"))
 	}
 
-	docWidth := clamp(width-8, 52, 116)
-	headerNeededWidth := lipgloss.Width(headerContent) + headerBarStyle.GetHorizontalFrameSize()
-	if headerNeededWidth > docWidth {
-		docWidth = min(availableDocWidth, headerNeededWidth)
-	}
-
 	bodyInnerWidth := clamp(docWidth-bodyPanelStyle.GetHorizontalFrameSize(), 24, docWidth)
 	headerWidth := clamp(docWidth-headerBarStyle.GetHorizontalFrameSize(), 20, docWidth)
 	header := headerBarStyle.Width(headerWidth).Render(headerContent)
-	bodyHeight := clamp(height-lipgloss.Height(header)-10, 4, height-14)
+	bodyHeight := clamp(height-lipgloss.Height(header)-8, 4, height-12)
 	return bodyInnerWidth, bodyHeight
 }

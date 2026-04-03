@@ -19,11 +19,17 @@ type ChatMessage struct {
 	ActionEvent   string // "start" or "done"
 }
 
+type chatScrollCache struct {
+	lastConvLines  int
+	lastConvHeight int
+}
+
 // ChatTab holds all state for the Chat tab.
 type ChatTab struct {
 	messages     []ChatMessage
 	input        textinput.Model
 	scrollOffset int // lines from the bottom to scroll up by
+	scrollCache  *chatScrollCache
 }
 
 func newChatTab() ChatTab {
@@ -66,6 +72,15 @@ func (c ChatTab) updateInput(msg tea.Msg, busy bool) (ChatTab, string, tea.Cmd) 
 				step = 6
 			}
 			c.scrollOffset += step
+			if c.scrollCache != nil && c.scrollCache.lastConvLines > 0 {
+				maxOffset := c.scrollCache.lastConvLines - c.scrollCache.lastConvHeight
+				if maxOffset < 0 {
+					maxOffset = 0
+				}
+				if c.scrollOffset > maxOffset {
+					c.scrollOffset = maxOffset
+				}
+			}
 			return c, "", nil
 		case "down", "pgdn":
 			step := 1
@@ -142,7 +157,7 @@ func (c ChatTab) view(width, height int, providerName string, providerDisabled b
 		classDisplay = dimStyle.Render("none")
 	}
 
-	metaBody := lipgloss.NewStyle().Width(width - 6).Render(fmt.Sprintf(
+	metaBody := lipgloss.NewStyle().Width(width - 6).MaxWidth(width - 6).Render(fmt.Sprintf(
 		"%s %s  %s\nClass: %s",
 		indicator,
 		pName,
@@ -150,24 +165,25 @@ func (c ChatTab) view(width, height int, providerName string, providerDisabled b
 		classDisplay,
 	))
 
-	chatHeight := clamp(height-15, 8, height-10)
-	chatPane := c.renderChatPane(width, chatHeight, busy)
+	sessionChrome := sectionStyle.GetVerticalFrameSize() + 1
+	sessionBodyH := lipgloss.Height(lipgloss.NewStyle().Width(width - 6).Render(metaBody))
+	chatBodyHeight := max(8, height-(sessionBodyH+sessionChrome)-sessionChrome)
+	chatPane := c.renderChatPane(width, chatBodyHeight, busy)
 
-	sections := []string{
-		renderSection("Session", metaBody, width),
-		renderSection("Chat", chatPane, width),
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	return renderSections([]SectionDef{
+		{Title: "Session", Body: metaBody},
+		{Title: "Chat", Body: chatPane, Flex: true},
+	}, width, height)
 }
 
 func (c ChatTab) renderChatPane(width, height int, busy bool) string {
-	inputBlock := c.input.View() + "\n" +
-		dimStyle.Render("Enter send  •  Ctrl+P actions  •  ↑/↓ line scroll  •  Esc cancel")
+	inputBlock := lipgloss.NewStyle().Width(width).MaxWidth(width).Render(c.input.View())
 	inputHeight := lipgloss.Height(inputBlock)
 	conversationHeight := max(4, height-inputHeight-1)
 	conversation := c.renderConversation(width, conversationHeight, busy)
 	divider := dimStyle.Render(strings.Repeat("─", clamp(width-8, 12, width)))
-	return conversation + "\n" + divider + "\n" + inputBlock
+	pane := conversation + "\n" + divider + "\n" + inputBlock
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Render(pane)
 }
 
 func (c ChatTab) renderConversation(width, height int, busy bool) string {
@@ -199,6 +215,7 @@ func (c ChatTab) renderConversation(width, height int, busy bool) string {
 	}
 	lines := strings.Split(strings.Join(parts, "\n"), "\n")
 	totalLines := len(lines)
+	c.scrollCache = &chatScrollCache{lastConvLines: totalLines, lastConvHeight: height}
 	if totalLines <= height {
 		c.scrollOffset = 0
 		return strings.Join(lines, "\n")
@@ -263,7 +280,7 @@ func renderChatMessage(message ChatMessage, width int) string {
 		}
 		detail := ""
 		if message.Content != "" {
-			detail = "  " + dimStyle.Render(truncate(message.Content, 80))
+			detail = "  " + dimStyle.Render(truncateWidth(message.Content, 80))
 		}
 		return "  " + icon + " " + name + detail
 	case "system":
@@ -276,14 +293,23 @@ func renderChatMessage(message ChatMessage, width int) string {
 	}
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+func (c ChatTab) helpKeys() []KeyBinding {
+	if c.input.Focused() {
+		return []KeyBinding{
+			{Key: "Enter", Desc: "send"},
+			{Key: "↑/↓", Desc: "scroll"},
+			{Key: "Ctrl+P", Desc: "actions"},
+			{Key: "Esc", Desc: "blur"},
+		}
 	}
-	return s[:max] + "…"
+	return []KeyBinding{
+		{Key: "/", Desc: "focus"},
+		{Key: "↑/↓", Desc: "scroll"},
+		{Key: "Ctrl+P", Desc: "actions"},
+	}
 }
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 func titleCaseLabel(label string) string {
 	parts := strings.Fields(strings.ReplaceAll(label, "_", " "))

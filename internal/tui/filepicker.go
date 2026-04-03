@@ -277,7 +277,7 @@ func (fp *FilePickerModel) View(innerWidth, innerHeight int) string {
 
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Browse Files") + "\n")
-	b.WriteString(dimStyle.Render(truncate(fp.currentDir, innerWidth-2)) + "\n\n")
+	b.WriteString(dimStyle.Render(truncateWidth(fp.currentDir, innerWidth-2)) + "\n\n")
 
 	// List entries.
 	for i := fp.viewOffset; i < fp.viewOffset+listRows && i < len(fp.entries); i++ {

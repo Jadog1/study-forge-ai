@@ -119,22 +119,87 @@ func windowLines(lines []string, scroll, visH int) string {
 	return strings.Join(parts, "\n")
 }
 
-// tailLines keeps the last maxLines lines of text, clipping from the top.
-// Used for the conversation view so that the newest (bottom) messages are
-// always fully visible when content overflows the available height.
-func tailLines(text string, maxLines int) string {
-	if maxLines <= 0 {
-		return ""
-	}
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	if len(lines) <= maxLines {
-		return text
-	}
-	return strings.Join(lines[len(lines)-maxLines:], "\n")
-}
-
 func renderSection(title, body string, width int) string {
 	innerWidth := clamp(width-sectionStyle.GetHorizontalFrameSize(), 12, width)
 	content := lipgloss.NewStyle().Width(innerWidth).MaxWidth(innerWidth).Render(body)
 	return sectionStyle.Width(innerWidth).Render(sectionTitleStyle.Render(title) + "\n" + content)
+}
+
+// SectionDef describes one section in a vertical stack rendered by renderSections.
+// When Flex is true the section expands to consume remaining height after all
+// fixed-height sections have been measured.
+type SectionDef struct {
+	Title string
+	Body  string
+	Flex  bool
+}
+
+// renderSections composes multiple SectionDef entries into a single vertical
+// stack that fits within the given width×height budget.
+//
+// Non-flex sections are rendered first at their natural height. Remaining
+// vertical space is distributed equally among flex sections whose bodies are
+// clipped to fit. If total content still exceeds height the output is clipped.
+func renderSections(sections []SectionDef, width, height int) string {
+	if len(sections) == 0 {
+		return ""
+	}
+	if height <= 0 {
+		return ""
+	}
+
+	// Chrome overhead per section: vertical border (2) + title line (1).
+	sectionChrome := sectionStyle.GetVerticalFrameSize() + 1
+
+	type part struct {
+		rendered string
+		height   int
+	}
+	parts := make([]part, len(sections))
+	fixedTotal := 0
+	flexCount := 0
+
+	for i, sec := range sections {
+		if sec.Flex {
+			flexCount++
+			continue
+		}
+		rendered := renderSection(sec.Title, sec.Body, width)
+		h := lipgloss.Height(rendered)
+		parts[i] = part{rendered: rendered, height: h}
+		fixedTotal += h
+	}
+
+	remaining := height - fixedTotal
+	flexLeft := flexCount
+	for i, sec := range sections {
+		if !sec.Flex {
+			continue
+		}
+		budget := remaining / flexLeft
+		if budget < sectionChrome+1 {
+			budget = sectionChrome + 1
+		}
+		bodyBudget := budget - sectionChrome
+		if bodyBudget < 1 {
+			bodyBudget = 1
+		}
+		clipped := clipLines(sec.Body, bodyBudget)
+		rendered := renderSection(sec.Title, clipped, width)
+		h := lipgloss.Height(rendered)
+		parts[i] = part{rendered: rendered, height: h}
+		remaining -= h
+		flexLeft--
+	}
+
+	strs := make([]string, len(parts))
+	for i, p := range parts {
+		strs[i] = p.rendered
+	}
+	joined := lipgloss.JoinVertical(lipgloss.Left, strs...)
+
+	if lipgloss.Height(joined) > height {
+		joined = clipLines(joined, height)
+	}
+	return joined
 }

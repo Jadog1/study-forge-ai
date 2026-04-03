@@ -6,6 +6,24 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+var (
+	colorPrimary     = lipgloss.Color("#7C3AED")
+	colorSecondary   = lipgloss.Color("#06B6D4")
+	colorAccent      = lipgloss.Color("#F59E0B")
+	colorSuccess     = lipgloss.Color("#10B981")
+	colorError       = lipgloss.Color("#EF4444")
+	colorWarning     = lipgloss.Color("#F59E0B")
+	colorMuted       = lipgloss.Color("#6B7280")
+	colorDim         = lipgloss.Color("#4B5563")
+	colorText        = lipgloss.Color("#E5E7EB")
+	colorTextBright  = lipgloss.Color("#F9FAFB")
+	colorSurface     = lipgloss.Color("#1F2937")
+	colorSurfaceLt   = lipgloss.Color("#374151")
+	colorBorder      = lipgloss.Color("#4B5563")
+	colorBorderFocus = lipgloss.Color("#7C3AED")
 )
 
 // PaletteAction represents one entry in the command palette.

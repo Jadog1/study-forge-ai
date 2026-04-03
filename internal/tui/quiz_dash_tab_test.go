@@ -137,6 +137,21 @@ func TestQuizDashboardTabUpdateNavigatesAndScrollsDetails(t *testing.T) {
 	}
 }
 
+func dashboardTruncateLines(lines []string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			trimmed = append(trimmed, "")
+			continue
+		}
+		trimmed = append(trimmed, truncateWidth(line, width))
+	}
+	return trimmed
+}
+
 func TestDashboardTruncateLinesUsesEllipsis(t *testing.T) {
 	lines := dashboardTruncateLines([]string{"This is a deliberately long dashboard line"}, 14)
 	if len(lines) != 1 {
