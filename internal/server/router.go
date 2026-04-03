@@ -34,6 +34,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Export
 	mux.HandleFunc("/api/export", s.handleExport)
 
+	// File browsing (local filesystem)
+	mux.HandleFunc("/api/browse", s.handleBrowse)
+
 	// SFQ meta
 	mux.HandleFunc("/api/sfq/question-types", s.handleQuestionTypes)
 }

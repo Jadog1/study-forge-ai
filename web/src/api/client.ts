@@ -1,12 +1,15 @@
 import type {
+  BrowseResponse,
   ChatStreamEvent,
   ClassDetail,
   Component,
   Config,
   ContextProfile,
   ExportKnowledgeParams,
+  ExportKnowledgeResult,
   GenerateQuizParams,
   IngestParams,
+  IngestSSEEvent,
   QuizDashboardSnapshot,
   Section,
   SyncReport,
@@ -122,15 +125,44 @@ export function fetchUsageLedger(): Promise<UsageEvent[]> {
   return fetchJSON<{ events: UsageEvent[] }>('/usage/ledger').then(r => r.events ?? []);
 }
 
-export function exportKnowledge(params: ExportKnowledgeParams): Promise<{ summary: string }> {
-  return postJSON<{ summary: string }>('/export', params);
+export function exportKnowledge(params: ExportKnowledgeParams): Promise<ExportKnowledgeResult> {
+  return postJSON<ExportKnowledgeResult>('/export', params);
 }
 
-export function ingest(
+export function browseFiles(dir?: string): Promise<BrowseResponse> {
+  const qs = dir ? `?dir=${encodeURIComponent(dir)}` : '';
+  return fetchJSON<BrowseResponse>(`/browse${qs}`);
+}
+
+export async function streamIngest(
   params: IngestParams,
-  onEvent: (event: ChatStreamEvent) => void,
+  onEvent: (event: IngestSSEEvent) => void,
 ): Promise<void> {
-  return streamSSE('/ingest', params, onEvent);
+  const resp = await fetch(`${API_BASE}/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          onEvent(JSON.parse(line.slice(6)) as IngestSSEEvent);
+        } catch {
+          // skip malformed
+        }
+      }
+    }
+  }
 }
 
 // ── Object-style API (used by QuizDashboardPage, ClassesPage) ───────
@@ -191,8 +223,8 @@ export const api = {
   fetchComponents: () => fetchJSON<{ components: Component[] }>('/knowledge/components').then(r => r.components ?? []),
   fetchUsageTotals: (filter?: UsageFilter) => fetchUsageTotals(filter),
   fetchUsageLedger: () => fetchJSON<{ events: UsageEvent[] }>('/usage/ledger').then(r => r.events ?? []),
-  ingest: (params: IngestParams, onEvent: (e: ChatStreamEvent) => void) =>
-    streamSSE('/ingest', params, onEvent),
-  exportKnowledge: (params: ExportKnowledgeParams) =>
-    postJSON<{ summary: string }>('/export', params),
+  browseFiles: (dir?: string) => browseFiles(dir),
+  streamIngest: (params: IngestParams, onEvent: (e: IngestSSEEvent) => void) =>
+    streamIngest(params, onEvent),
+  exportKnowledge: (params: ExportKnowledgeParams) => exportKnowledge(params),
 };

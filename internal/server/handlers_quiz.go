@@ -129,12 +129,14 @@ func loadQuizDocs() ([]quizDocSummary, error) {
 }
 
 type generateQuizRequest struct {
-	Class           string   `json:"class"`
-	Count           int      `json:"count"`
-	Type            string   `json:"type"`
-	AssessmentType  string   `json:"assessment_type"`
-	QuestionType    string   `json:"question_type"`
-	FocusedSections []string `json:"focused_sections"`
+	Class           string                     `json:"class"`
+	Count           int                        `json:"count"`
+	Type            string                     `json:"type"`
+	AssessmentType  string                     `json:"assessment_type"`
+	QuestionType    string                     `json:"question_type"`
+	FocusedSections []string                   `json:"focused_sections"`
+	Tags            []string                   `json:"tags"`
+	Directives      []quiz.OrchestratorDirective `json:"directives"`
 }
 
 func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
@@ -166,6 +168,8 @@ func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
 		Count:           req.Count,
 		TypePreference:  typePreference,
 		FocusedSections: req.FocusedSections,
+		Tags:            req.Tags,
+		Directives:      req.Directives,
 		ProviderOverrides: &quiz.QuizProviderOverrides{
 			Orchestrator: provider,
 			Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),

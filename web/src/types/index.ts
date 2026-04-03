@@ -255,25 +255,67 @@ export interface ChatAction {
   done: boolean;
 }
 
+export interface OrchestratorDirective {
+  component_id: string;
+  section_id: string;
+  section_title: string;
+  question_count: number;
+  question_types: string[];
+  angle: string;
+}
+
 export interface GenerateQuizParams {
   class: string;
   count: number;
   assessment_type: string;
   question_type: string;
   focused_sections?: string[];
-}
-
-export interface IngestParams {
-  class: string;
-  paths: string[];
   tags?: string[];
-  profile?: string;
+  directives?: OrchestratorDirective[];
 }
 
 export interface ExportKnowledgeParams {
+  output_path: string;
+  class?: string;
+  include_embeddings?: boolean;
+}
+
+export interface ExportKnowledgeResult {
+  output_path: string;
   class: string;
-  format?: string;
-  tags?: string[];
+  sections: number;
+  components: number;
+  include_embeddings: boolean;
+}
+
+export interface BrowseEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+export interface BrowseResponse {
+  dir: string;
+  entries: BrowseEntry[];
+}
+
+export interface IngestParams {
+  path?: string;
+  class?: string;
+  files?: string[];
+  clean?: boolean;
+}
+
+export interface IngestSSEEvent {
+  type: 'progress' | 'done' | 'error';
+  label?: string;
+  detail?: string;
+  done?: string;
+  error?: string;
+  notes?: number;
+  sections_added?: number;
+  components_added?: number;
+  usage_events?: number;
 }
 
 export interface UsageFilter {
