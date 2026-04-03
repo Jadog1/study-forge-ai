@@ -61,6 +61,8 @@ type WorkflowModel struct {
 	// Export-specific options.
 	includeEmbeddings bool // if true, include embeddings in exported JSON
 
+	sectionsInput textinput.Model // section filter for focused assessment mode
+
 	// Live agent-step display populated during stepRunning for streaming workflows.
 	actionLines   []string // one entry per tool action invoked so far
 	actionOffset  int      // top line offset for scrollable running log
@@ -99,6 +101,11 @@ func newWorkflow() WorkflowModel {
 	countInput.CharLimit = 4
 	countInput.Width = 16
 
+	sectionsInput := textinput.New()
+	sectionsInput.Placeholder = "section titles or IDs, comma-separated (optional)"
+	sectionsInput.CharLimit = 500
+	sectionsInput.Width = 40
+
 	assessmentOptions := make([]string, 0, len(classpkg.ContextProfiles()))
 	for _, profile := range classpkg.ContextProfiles() {
 		assessmentOptions = append(assessmentOptions, profile.Kind)
@@ -114,6 +121,7 @@ func newWorkflow() WorkflowModel {
 		pathInput:         pathInput,
 		classInput:        classInput,
 		countInput:        countInput,
+		sectionsInput:     sectionsInput,
 		assessmentOptions: assessmentOptions,
 		questionTypeOpts:  questionTypeOpts,
 		filePicker:        newFilePicker(),
@@ -124,6 +132,7 @@ func (w WorkflowModel) resize(width int) WorkflowModel {
 	w.pathInput.Width = clamp(width-6, 18, width)
 	w.classInput.Width = clamp(width-6, 18, width)
 	w.countInput.Width = clamp(width-30, 10, 18)
+	w.sectionsInput.Width = clamp(width-6, 18, width)
 	return w
 }
 
@@ -145,6 +154,7 @@ func (w WorkflowModel) Open(kind WorkflowKind, defaultClass string) WorkflowMode
 	w.pathInput.SetValue("")
 	w.classInput.SetValue(defaultClass)
 	w.countInput.SetValue("10")
+	w.sectionsInput.SetValue("")
 	w.pathInput.Placeholder = "folder path  (e.g. ./notes)"
 	w.classInput.Placeholder = "class name"
 	w.assessmentIdx = 0
@@ -315,6 +325,8 @@ func (w WorkflowModel) updateInput(msg tea.Msg, orc *orchestrator.Orchestrator, 
 			w.classInput, cmd = w.classInput.Update(msg)
 		case 1:
 			w.countInput, cmd = w.countInput.Update(msg)
+		case 4:
+			w.sectionsInput, cmd = w.sectionsInput.Update(msg)
 		default:
 			cmd = nil
 		}
@@ -345,6 +357,7 @@ func (w *WorkflowModel) updateGenerateFieldFocus() {
 	w.pathInput.Blur()
 	w.classInput.Blur()
 	w.countInput.Blur()
+	w.sectionsInput.Blur()
 	switch w.fieldIdx {
 	case 0:
 		w.classInput.Focus()
@@ -352,6 +365,8 @@ func (w *WorkflowModel) updateGenerateFieldFocus() {
 		w.countInput.Focus()
 	case 2, 3:
 		// Selection rows use highlighted styling only.
+	case 4:
+		w.sectionsInput.Focus()
 	}
 }
 
@@ -374,6 +389,9 @@ func (w WorkflowModel) fieldCount() int {
 	case WorkflowIngest:
 		return 4 // path, class, clean checkbox, browse
 	case WorkflowGenerate:
+		if w.selectedAssessmentKind() == "focused" {
+			return 5 // class, count, assessment, question preference, sections
+		}
 		return 4 // class, count, assessment, question preference
 	case WorkflowExport:
 		return 3
@@ -425,9 +443,10 @@ func (w WorkflowModel) startWorkflow(orc *orchestrator.Orchestrator, cfg *config
 			return w, false, "Class name is required", nil
 		}
 		opts := quiz.QuizOptions{
-			AssessmentKind: w.selectedAssessmentKind(),
-			Count:          parseQuizCount(w.countInput.Value()),
-			TypePreference: w.selectedQuestionPreference(),
+			AssessmentKind:  w.selectedAssessmentKind(),
+			Count:           parseQuizCount(w.countInput.Value()),
+			TypePreference:  w.selectedQuestionPreference(),
+			FocusedSections: parseSectionsList(w.sectionsInput.Value()),
 		}
 		w.step = stepRunning
 		return w, true, "Running " + w.title() + "…", runQuizCmd(class, opts, orc, cfg)
@@ -493,9 +512,10 @@ func (w WorkflowModel) updateConfirm(msg tea.Msg, orc *orchestrator.Orchestrator
 				}
 			case WorkflowGenerate:
 				opts := quiz.QuizOptions{
-					AssessmentKind: w.selectedAssessmentKind(),
-					Count:          parseQuizCount(w.countInput.Value()),
-					TypePreference: w.selectedQuestionPreference(),
+					AssessmentKind:  w.selectedAssessmentKind(),
+					Count:           parseQuizCount(w.countInput.Value()),
+					TypePreference:  w.selectedQuestionPreference(),
+					FocusedSections: parseSectionsList(w.sectionsInput.Value()),
 				}
 				w.step = stepRunning
 				cmd = runQuizCmd(class, opts, orc, cfg)
@@ -851,6 +871,11 @@ func (w WorkflowModel) viewInputStep() string {
 		b.WriteString(labelStyle.Render("Question preference:") + "\n")
 		b.WriteString(w.renderSelectionRow(w.selectedQuestionPreference(), w.fieldIdx == 3) + "\n")
 		b.WriteString(dimStyle.Render("context-default uses default_question_type from class context file") + "\n\n")
+		if w.selectedAssessmentKind() == "focused" {
+			b.WriteString(labelStyle.Render("Sections to focus on:") + "\n")
+			b.WriteString(dimStyle.Render("Comma-separated section titles or IDs (leave blank for all sections)") + "\n")
+			b.WriteString(w.sectionsInput.View() + "\n\n")
+		}
 		b.WriteString(dimStyle.Render("Tab/Shift+Tab navigate  •  Left/Right or Space cycle  •  Enter to generate  •  Esc to cancel"))
 	case WorkflowExport:
 		b.WriteString(labelStyle.Render("Output file:") + "\n")
@@ -1003,6 +1028,21 @@ func splitLongWord(word string, width int) []string {
 		return []string{word}
 	}
 	return lines
+}
+
+func parseSectionsList(v string) []string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	var result []string
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func parseQuizCount(v string) int {

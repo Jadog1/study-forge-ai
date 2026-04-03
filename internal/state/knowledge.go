@@ -575,9 +575,6 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 
 	for _, result := range results.Results {
 		quizSection, ok := quizByID[result.QuestionID]
-		if !ok {
-			continue
-		}
 		sectionID := strings.TrimSpace(quizSection.SectionID)
 		if sectionID == "" {
 			sectionID = strings.TrimSpace(result.SectionID)
@@ -608,6 +605,11 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 			Correct:    result.Correct,
 			AnsweredAt: answeredAt.UTC(),
 		}
+		if !ok {
+			if event.Question == "" {
+				event.Question = strings.TrimSpace(result.QuestionID)
+			}
+		}
 
 		for i := range sectionIndex.Sections {
 			if !strings.EqualFold(sectionIndex.Sections[i].Class, class) {
@@ -616,8 +618,10 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 			if sectionIndex.Sections[i].ID != sectionID {
 				continue
 			}
-			sectionIndex.Sections[i].QuestionHistory = append(sectionIndex.Sections[i].QuestionHistory, event)
-			sectionIndex.Sections[i].UpdatedAt = time.Now().UTC()
+			if !questionHistoryContains(sectionIndex.Sections[i].QuestionHistory, event) {
+				sectionIndex.Sections[i].QuestionHistory = append(sectionIndex.Sections[i].QuestionHistory, event)
+				sectionIndex.Sections[i].UpdatedAt = time.Now().UTC()
+			}
 			break
 		}
 
@@ -628,8 +632,10 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 			if componentIndex.Components[i].ID != componentID {
 				continue
 			}
-			componentIndex.Components[i].QuestionHistory = append(componentIndex.Components[i].QuestionHistory, event)
-			componentIndex.Components[i].UpdatedAt = time.Now().UTC()
+			if !questionHistoryContains(componentIndex.Components[i].QuestionHistory, event) {
+				componentIndex.Components[i].QuestionHistory = append(componentIndex.Components[i].QuestionHistory, event)
+				componentIndex.Components[i].UpdatedAt = time.Now().UTC()
+			}
 			break
 		}
 	}
@@ -641,6 +647,22 @@ func AppendQuizQuestionHistory(class string, quiz Quiz, results QuizResults) err
 		return fmt.Errorf("save component index: %w", err)
 	}
 	return nil
+}
+
+func questionHistoryContains(history []QuestionHistoryEntry, event QuestionHistoryEntry) bool {
+	for _, existing := range history {
+		if strings.TrimSpace(existing.QuizID) != strings.TrimSpace(event.QuizID) {
+			continue
+		}
+		if strings.TrimSpace(existing.QuestionID) != strings.TrimSpace(event.QuestionID) {
+			continue
+		}
+		if !existing.AnsweredAt.UTC().Equal(event.AnsweredAt.UTC()) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // SearchSectionsByEmbedding finds nearest sections by cosine similarity.

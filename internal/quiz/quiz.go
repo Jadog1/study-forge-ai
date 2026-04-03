@@ -6,7 +6,6 @@
 package quiz
 
 import (
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -58,6 +57,13 @@ type QuizOptions struct {
 	// plan. This is useful for chat-driven quiz requests that already selected
 	// target components and exact counts.
 	Directives []OrchestratorDirective
+	// CoverageScope optionally reweights component scores using class coverage
+	// settings before candidate selection. Nil auto-loads class coverage config.
+	CoverageScope *classpkg.CoverageScope
+	// FocusedSections, when non-empty, restricts focused quiz mode to components
+	// belonging to sections whose ID or title contains any of the given strings
+	// (case-insensitive). Only meaningful when AssessmentKind is "focused".
+	FocusedSections []string
 	// ProviderOverrides, when non-nil, route each quiz agent to a specific AI
 	// provider instead of sharing the single provider passed to NewQuizStream.
 	// This enables granular model selection (e.g. a smarter model for the
@@ -87,6 +93,17 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	}
 
 	assessmentKind := classpkg.NormalizeContextProfile(opts.AssessmentKind)
+	isFocused := assessmentKind == "focused"
+	noteRoster, _ := classpkg.LoadNoteRoster(class)
+	if opts.CoverageScope == nil && !isFocused {
+		if scope, scopeErr := classpkg.LoadCoverageScope(class, assessmentKind); scopeErr != nil {
+			if onProgress != nil {
+				onProgress(ProgressEvent{Label: "Load coverage scope", Detail: scopeErr.Error(), Done: true, Err: scopeErr})
+			}
+		} else {
+			opts.CoverageScope = scope
+		}
+	}
 	profileDefaultType := classpkg.ResolveProfileDefaultQuestionType(class, assessmentKind, "multiple-choice")
 	profileDefaultType = sfq.NormalizeQuestionType(profileDefaultType, "multiple-choice")
 	if strings.EqualFold(strings.TrimSpace(opts.TypePreference), "context-default") {
@@ -137,12 +154,40 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		}
 		return nil, "", fmt.Errorf("no knowledge components found for class %q — run 'sfa ingest' first", class)
 	}
-	if signals, signalErr := loadRecentQuizSignals(class, recentQuizSignalMaxFiles); signalErr == nil {
-		recentSignals = signals
-		scores = applyRecentGenerationPenalty(scores, recentSignals.ComponentLastSeen, time.Now().UTC(), recentGenerationWindow, recentGenerationPenaltyMax)
+	if isFocused {
+		// In focused mode, filter to the requested sections and skip the recent
+		// generation penalty so just-studied material is always included.
+		if len(opts.FocusedSections) > 0 {
+			filtered := make([]ComponentScore, 0, len(scores))
+			for _, s := range scores {
+				if focusedSectionMatch(s, opts.FocusedSections) {
+					filtered = append(filtered, s)
+				}
+			}
+			scores = filtered
+		}
+		if len(scores) == 0 {
+			return nil, "", fmt.Errorf("no knowledge components found for the specified sections in class %q", class)
+		}
+	} else {
+		if signals, signalErr := loadRecentQuizSignals(class, recentQuizSignalMaxFiles); signalErr == nil {
+			recentSignals = signals
+			scores = applyRecentGenerationPenalty(scores, recentSignals.ComponentLastSeen, time.Now().UTC(), recentGenerationWindow, recentGenerationPenaltyMax)
+		}
+		if opts.CoverageScope != nil {
+			scores = applyCoverageWeighting(scores, opts.CoverageScope, noteRoster)
+			if onProgress != nil {
+				onProgress(ProgressEvent{Label: "Apply coverage scope", Detail: fmt.Sprintf("%d group(s)", len(opts.CoverageScope.Groups)), Done: true})
+			}
+			classProfileContext = mergeCoverageContext(classProfileContext, opts.CoverageScope, noteRoster)
+		}
+		if len(scores) == 0 {
+			return nil, "", fmt.Errorf("coverage scope excluded all knowledge candidates for class %q", class)
+		}
 	}
 	candidates := scores
-	if len(opts.Directives) == 0 {
+	if len(opts.Directives) == 0 && !isFocused {
+		// Focused mode uses all matching components; other modes diversify.
 		candidates = SelectCandidatesDiversified(scores, opts.Count*3, candidateExplorationRate, nil)
 	}
 
@@ -165,7 +210,11 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		if opts.ProviderOverrides != nil && opts.ProviderOverrides.Orchestrator != nil {
 			orcProvider = opts.ProviderOverrides.Orchestrator
 		}
-		directives, err = runOrchestratorAgent(class, assessmentKind, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
+		if isFocused {
+			directives, err = runFocusedOrchestratorAgent(class, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
+		} else {
+			directives, err = runOrchestratorAgent(class, assessmentKind, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
+		}
 		if err != nil {
 			return nil, "", fmt.Errorf("orchestrator: %w", err)
 		}
@@ -459,67 +508,6 @@ func LoadQuiz(path string) (*state.Quiz, error) {
 
 // ── internal helpers ──────────────────────────────────────────────────────────
 
-func executeQuizTool(cfg *config.Config, name string, _ map[string]any) (string, error) {
-	switch name {
-	case "sfq_schema":
-		return sfq.Schema(cfg.SFQ.Command), nil
-	default:
-		return "", fmt.Errorf("unknown quiz tool %q", name)
-	}
-}
-
-func describeQuizTool(name string) string {
-	switch name {
-	case "sfq_schema":
-		return "Fetching quiz YAML schema"
-	default:
-		return "Running tool"
-	}
-}
-
-func summarizeQuizResult(result string) string {
-	trimmed := strings.TrimSpace(result)
-	if trimmed == "" {
-		return "Done"
-	}
-	lines := strings.SplitN(trimmed, "\n", 2)
-	if len(lines[0]) > 80 {
-		return lines[0][:77] + "..."
-	}
-	return lines[0]
-}
-
-func extractQuizToolCall(resp string) (name string, args map[string]any, found bool, err error) {
-	start := strings.Index(resp, "<tool_call>")
-	if start == -1 {
-		return "", nil, false, nil
-	}
-	end := strings.Index(resp, "</tool_call>")
-	if end == -1 || end < start {
-		return "", nil, false, fmt.Errorf("unterminated tool_call block")
-	}
-	jsonBlock := strings.TrimSpace(resp[start+len("<tool_call>") : end])
-	jsonBlock = strings.TrimPrefix(jsonBlock, "```json")
-	jsonBlock = strings.TrimPrefix(jsonBlock, "```")
-	jsonBlock = strings.TrimSuffix(jsonBlock, "```")
-	jsonBlock = strings.TrimSpace(jsonBlock)
-
-	var call struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
-	}
-	if err := json.Unmarshal([]byte(jsonBlock), &call); err != nil {
-		return "", nil, false, fmt.Errorf("parse tool JSON: %w", err)
-	}
-	if call.Name == "" {
-		return "", nil, false, fmt.Errorf("tool name is required")
-	}
-	if call.Arguments == nil {
-		call.Arguments = map[string]any{}
-	}
-	return call.Name, call.Arguments, true, nil
-}
-
 func cleanYAML(resp string) string {
 	s := strings.TrimSpace(resp)
 	if strings.HasPrefix(s, "```yaml") {
@@ -529,6 +517,34 @@ func cleanYAML(resp string) string {
 	}
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+func mergeCoverageContext(base string, scope *classpkg.CoverageScope, roster *classpkg.NoteRoster) string {
+	if scope == nil || len(scope.Groups) == 0 {
+		return base
+	}
+	var lines []string
+	lines = append(lines, "Coverage priorities:")
+	for i, group := range scope.Groups {
+		patterns := classpkg.ResolveGroupPatterns(group, roster)
+		detail := ""
+		if len(patterns) > 0 {
+			detail = strings.Join(patterns, ", ")
+		} else if len(group.Tags) > 0 {
+			detail = "tags=" + strings.Join(group.Tags, ",")
+		} else {
+			detail = "(no match hints)"
+		}
+		lines = append(lines, fmt.Sprintf("- group %d weight=%.2f :: %s", i+1, group.Weight, detail))
+	}
+	if scope.ExcludeUnmatched {
+		lines = append(lines, "- unmatched material excluded")
+	}
+	coverageText := strings.Join(lines, "\n")
+	if strings.TrimSpace(base) == "" {
+		return coverageText
+	}
+	return strings.TrimSpace(base) + "\n\n" + coverageText
 }
 
 func normalizeQuizProvenance(q *state.Quiz) {
@@ -946,6 +962,24 @@ func hasAnyTag(noteTags, filter []string) bool {
 	}
 	for _, t := range filter {
 		if set[strings.ToLower(t)] {
+			return true
+		}
+	}
+	return false
+}
+
+// focusedSectionMatch reports whether a component score belongs to a section
+// that matches any of the targets by exact ID or case-insensitive title
+// substring.
+func focusedSectionMatch(cs ComponentScore, targets []string) bool {
+	sectionID := strings.ToLower(strings.TrimSpace(cs.Section.ID))
+	sectionTitle := strings.ToLower(strings.TrimSpace(cs.Section.Title))
+	for _, t := range targets {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		if t == sectionID || strings.Contains(sectionTitle, t) {
 			return true
 		}
 	}

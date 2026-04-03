@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -80,6 +81,42 @@ func clipLines(text string, maxLines int) string {
 		return "..."
 	}
 	return strings.Join(append(lines[:maxLines-1], dimStyle.Render("...")), "\n")
+}
+
+// scrollToView returns the scroll offset that keeps cursor within the visible
+// range [scroll, scroll+visH). Safe to use before any render.
+func scrollToView(scroll, cursor, visH int) int {
+	if visH <= 0 {
+		return 0
+	}
+	if cursor < scroll {
+		return cursor
+	}
+	if cursor >= scroll+visH {
+		return cursor - visH + 1
+	}
+	return scroll
+}
+
+// windowLines renders a scrollable window from a pre-rendered slice of lines.
+// scroll is the index of the first visible line; visH is the visible row count.
+// Shows ↑/↓ indicators when content is clipped at either end.
+func windowLines(lines []string, scroll, visH int) string {
+	total := len(lines)
+	if total == 0 {
+		return ""
+	}
+	start := clamp(scroll, 0, max(0, total-1))
+	end := min(start+visH, total)
+	parts := make([]string, 0, end-start+2)
+	if start > 0 {
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+	}
+	parts = append(parts, lines[start:end]...)
+	if end < total {
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("  ↓ %d more", total-end)))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // tailLines keeps the last maxLines lines of text, clipping from the top.

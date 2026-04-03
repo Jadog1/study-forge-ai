@@ -1,6 +1,7 @@
 package tracking
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,25 @@ import (
 	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
 )
+
+func withSyncTestDeps(t *testing.T) {
+	origLoadTrackedQuizCache := loadTrackedQuizCache
+	origSaveTrackedQuizCache := saveTrackedQuizCache
+	origHistorySessions := historySessions
+	origResultsSession := resultsSession
+	origLoadQuizDoc := loadQuizDoc
+	origSaveQuizResults := saveQuizResults
+	origAppendQuizQuestionHistory := appendQuizQuestionHistory
+	t.Cleanup(func() {
+		loadTrackedQuizCache = origLoadTrackedQuizCache
+		saveTrackedQuizCache = origSaveTrackedQuizCache
+		historySessions = origHistorySessions
+		resultsSession = origResultsSession
+		loadQuizDoc = origLoadQuizDoc
+		saveQuizResults = origSaveQuizResults
+		appendQuizQuestionHistory = origAppendQuizQuestionHistory
+	})
+}
 
 func TestNormalizePath_NormalizesCase(t *testing.T) {
 	tests := []struct {
@@ -227,5 +247,239 @@ func TestNormalizePath_EmptyAfterTrim(t *testing.T) {
 	result := normalizePath("\t\n   ")
 	if result != "" {
 		t.Errorf("whitespace-only input should return empty string, got %q", result)
+	}
+}
+
+func TestSyncTrackedQuizSessions_MapsAnswerIDAndProvenance(t *testing.T) {
+	withSyncTestDeps(t)
+	now := time.Now().UTC()
+	cache := &state.TrackedQuizCache{
+		Quizzes: []state.TrackedQuizRecord{{
+			QuizID:   "quiz-1",
+			Class:    "math",
+			QuizPath: "quizzes/math/quiz-1.yaml",
+			SFQPath:  "quizzes/math/quiz-1.sfq",
+		}},
+	}
+
+	loadTrackedQuizCache = func() (*state.TrackedQuizCache, error) { return cache, nil }
+	saveTrackedQuizCache = func(updated *state.TrackedQuizCache) error {
+		if updated == nil {
+			t.Fatal("expected non-nil cache")
+		}
+		return nil
+	}
+	historySessions = func() ([]sfq.SessionResult, error) {
+		return []sfq.SessionResult{{
+			SessionID:   "sess-1",
+			SourcePath:  "quizzes/math/quiz-1.sfq",
+			CompletedAt: now,
+		}}, nil
+	}
+	resultsSession = func(sessionID string) (*sfq.SessionResult, error) {
+		if sessionID != "sess-1" {
+			t.Fatalf("unexpected session id: %s", sessionID)
+		}
+		return &sfq.SessionResult{
+			SessionID:   sessionID,
+			CompletedAt: now,
+			Answers: []sfq.SessionAnswer{{
+				QuestionID: "1",
+				Correct:    true,
+				UserAnswer: "42",
+				AnsweredAt: now,
+			}},
+		}, nil
+	}
+	loadQuizDoc = func(path string) (*state.Quiz, error) {
+		if path != "quizzes/math/quiz-1.yaml" {
+			t.Fatalf("unexpected quiz path: %s", path)
+		}
+		return &state.Quiz{
+			Class: "math",
+			Sections: []state.QuizSection{{
+				ID:          "q-001",
+				Question:    "What is 6*7?",
+				Answer:      "42",
+				SectionID:   "sec-1",
+				ComponentID: "cmp-1",
+			}},
+		}, nil
+	}
+
+	var captured state.QuizResults
+	saveQuizResults = func(results *state.QuizResults, class, quizID string) error {
+		if class != "math" {
+			t.Fatalf("unexpected class: %s", class)
+		}
+		captured = *results
+		if quizID == "" {
+			t.Fatal("expected attempt id")
+		}
+		return nil
+	}
+	appendQuizQuestionHistory = func(class string, q state.Quiz, results state.QuizResults) error {
+		if class != "math" {
+			t.Fatalf("unexpected class in append: %s", class)
+		}
+		if len(results.Results) != 1 {
+			t.Fatalf("expected one result, got %d", len(results.Results))
+		}
+		return nil
+	}
+
+	report, err := SyncTrackedQuizSessions()
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if report.ImportedSessions != 1 || report.BackfilledSessions != 0 {
+		t.Fatalf("unexpected report counts: %#v", report)
+	}
+	if report.UnmappedAnswers != 0 {
+		t.Fatalf("expected 0 unmapped answers, got %d", report.UnmappedAnswers)
+	}
+	if len(captured.Results) != 1 {
+		t.Fatalf("expected one captured result, got %d", len(captured.Results))
+	}
+	if captured.Results[0].QuestionID != "q-001" {
+		t.Fatalf("expected canonical question id q-001, got %q", captured.Results[0].QuestionID)
+	}
+	if captured.Results[0].SectionID != "sec-1" || captured.Results[0].ComponentID != "cmp-1" {
+		t.Fatalf("expected provenance on captured result, got %#v", captured.Results[0])
+	}
+}
+
+func TestSyncTrackedQuizSessions_TracksUnmappedAnswers(t *testing.T) {
+	withSyncTestDeps(t)
+	now := time.Now().UTC()
+	cache := &state.TrackedQuizCache{
+		Quizzes: []state.TrackedQuizRecord{{
+			QuizID:   "quiz-1",
+			Class:    "math",
+			QuizPath: "quiz.yaml",
+			SFQPath:  "quiz.sfq",
+		}},
+	}
+
+	loadTrackedQuizCache = func() (*state.TrackedQuizCache, error) { return cache, nil }
+	saveTrackedQuizCache = func(_ *state.TrackedQuizCache) error { return nil }
+	historySessions = func() ([]sfq.SessionResult, error) {
+		return []sfq.SessionResult{{SessionID: "sess-1", SourcePath: "quiz.sfq", CompletedAt: now}}, nil
+	}
+	resultsSession = func(string) (*sfq.SessionResult, error) {
+		return &sfq.SessionResult{SessionID: "sess-1", CompletedAt: now, Answers: []sfq.SessionAnswer{{
+			QuestionID: "unknown-id",
+			Correct:    false,
+		}}}, nil
+	}
+	loadQuizDoc = func(string) (*state.Quiz, error) {
+		return &state.Quiz{Class: "math", Sections: []state.QuizSection{{ID: "q-001"}}}, nil
+	}
+	saveQuizResults = func(_ *state.QuizResults, _, _ string) error { return nil }
+	appendQuizQuestionHistory = func(_ string, _ state.Quiz, _ state.QuizResults) error { return nil }
+
+	report, err := SyncTrackedQuizSessions()
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if report.ImportedSessions != 1 {
+		t.Fatalf("expected one imported session, got %d", report.ImportedSessions)
+	}
+	if report.UnmappedAnswers != 1 {
+		t.Fatalf("expected one unmapped answer, got %d", report.UnmappedAnswers)
+	}
+}
+
+func TestSyncTrackedQuizSessions_BackfillReprocessesImported(t *testing.T) {
+	withSyncTestDeps(t)
+	now := time.Now().UTC()
+	cache := &state.TrackedQuizCache{
+		Quizzes: []state.TrackedQuizRecord{{
+			QuizID:         "quiz-1",
+			Class:          "math",
+			QuizPath:       "quiz.yaml",
+			SFQPath:        "quiz.sfq",
+			LastSessionID:  "sess-1",
+			LastImportedAt: now,
+		}},
+		ImportedSessionIDs: []string{"sess-1"},
+	}
+
+	loadTrackedQuizCache = func() (*state.TrackedQuizCache, error) { return cache, nil }
+	saveTrackedQuizCache = func(_ *state.TrackedQuizCache) error { return nil }
+	historySessions = func() ([]sfq.SessionResult, error) {
+		return []sfq.SessionResult{{SessionID: "sess-1", SourcePath: "quiz.sfq", CompletedAt: now}}, nil
+	}
+	resultsSession = func(string) (*sfq.SessionResult, error) {
+		return &sfq.SessionResult{SessionID: "sess-1", CompletedAt: now, Answers: []sfq.SessionAnswer{{
+			QuestionID: "q-001",
+			Correct:    true,
+		}}}, nil
+	}
+	loadQuizDoc = func(string) (*state.Quiz, error) {
+		return &state.Quiz{Class: "math", Sections: []state.QuizSection{{ID: "q-001", SectionID: "sec-1", ComponentID: "cmp-1"}}}, nil
+	}
+	saveQuizResults = func(_ *state.QuizResults, _, _ string) error { return nil }
+	appendQuizQuestionHistory = func(_ string, _ state.Quiz, _ state.QuizResults) error { return nil }
+
+	report, err := SyncTrackedQuizSessionsWithOptions(SyncOptions{BackfillImported: true})
+	if err != nil {
+		t.Fatalf("sync backfill failed: %v", err)
+	}
+	if report.ImportedSessions != 0 {
+		t.Fatalf("expected no new imports during backfill, got %d", report.ImportedSessions)
+	}
+	if report.BackfilledSessions != 1 {
+		t.Fatalf("expected one backfilled session, got %d", report.BackfilledSessions)
+	}
+}
+
+func TestSyncTrackedQuizSessions_DefaultSkipsImportedSessions(t *testing.T) {
+	withSyncTestDeps(t)
+	now := time.Now().UTC()
+	cache := &state.TrackedQuizCache{
+		Quizzes:            []state.TrackedQuizRecord{{QuizID: "quiz-1", Class: "math", QuizPath: "quiz.yaml", SFQPath: "quiz.sfq"}},
+		ImportedSessionIDs: []string{"sess-1"},
+	}
+
+	loadTrackedQuizCache = func() (*state.TrackedQuizCache, error) { return cache, nil }
+	saveTrackedQuizCache = func(_ *state.TrackedQuizCache) error { return nil }
+	historySessions = func() ([]sfq.SessionResult, error) {
+		return []sfq.SessionResult{{SessionID: "sess-1", SourcePath: "quiz.sfq", CompletedAt: now}}, nil
+	}
+	calledResults := false
+	resultsSession = func(string) (*sfq.SessionResult, error) {
+		calledResults = true
+		return nil, errors.New("should not be called for already imported sessions")
+	}
+	loadQuizDoc = func(string) (*state.Quiz, error) {
+		return &state.Quiz{Class: "math", Sections: []state.QuizSection{}}, nil
+	}
+	saveQuizResults = func(_ *state.QuizResults, _, _ string) error { return nil }
+	appendQuizQuestionHistory = func(_ string, _ state.Quiz, _ state.QuizResults) error { return nil }
+
+	report, err := SyncTrackedQuizSessions()
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if calledResults {
+		t.Fatal("results session should not be called for already imported sessions")
+	}
+	if report.ImportedSessions != 0 || report.BackfilledSessions != 0 {
+		t.Fatalf("expected no imports/backfills, got %#v", report)
+	}
+}
+
+func TestQuestionIDCandidates_NormalizesVariants(t *testing.T) {
+	candidates := questionIDCandidates("q-001")
+	joined := strings.Join(candidates, ",")
+	if !strings.Contains(joined, "q-001") || !strings.Contains(joined, "001") || !strings.Contains(joined, "1") {
+		t.Fatalf("unexpected candidates for q-001: %v", candidates)
+	}
+
+	numericCandidates := questionIDCandidates("001")
+	numericJoined := strings.Join(numericCandidates, ",")
+	if !strings.Contains(numericJoined, "q-001") || !strings.Contains(numericJoined, "q-1") || !strings.Contains(numericJoined, "1") {
+		t.Fatalf("unexpected candidates for 001: %v", numericCandidates)
 	}
 }

@@ -671,6 +671,9 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			syncSummary = "\nSession sync warning: " + syncErr.Error()
 		} else {
 			syncSummary = fmt.Sprintf("\nImported sessions: %d\nPending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
+			if report.UnmappedAnswers > 0 {
+				syncSummary += fmt.Sprintf("\nUnmapped answers: %d", report.UnmappedAnswers)
+			}
 		}
 		if sfqErr != nil {
 			return fmt.Sprintf("Quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked session could not start: %v%s", path, quizID, q.Title, len(q.Sections), sfqErr, syncSummary), nil
@@ -708,6 +711,9 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			syncSummary = "\nSession sync warning: " + syncErr.Error()
 		} else {
 			syncSummary = fmt.Sprintf("\nImported sessions: %d\nPending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
+			if report.UnmappedAnswers > 0 {
+				syncSummary += fmt.Sprintf("\nUnmapped answers: %d", report.UnmappedAnswers)
+			}
 		}
 		if sfqErr != nil {
 			return fmt.Sprintf("Adaptive quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked session could not start: %v%s", path, quizID, q.Title, len(q.Sections), sfqErr, syncSummary), nil

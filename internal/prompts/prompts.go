@@ -197,6 +197,98 @@ func OrchestratorPrompt(class, assessmentKind, classContext string, candidates [
 	return b.String()
 }
 
+// FocusedOrchestratorPrompt builds the prompt sent to the orchestrator LLM
+// agent in focused quiz mode.  Unlike OrchestratorPrompt, this variant
+// provides the full content of every candidate component (no truncation) and
+// instructs the orchestrator to prioritise comprehensive coverage of the
+// selected material rather than weakness-driven selection.  It is designed for
+// hyper-focused studying immediately after reading specific sections.
+func FocusedOrchestratorPrompt(class, classContext string, candidates []OrchestratorCandidate, totalCount int, typePreference, customContext string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are the focused quiz orchestrator for class: %s.\n", class)
+	b.WriteString("Assessment mode: focused\n")
+	fmt.Fprintf(&b, "The student has JUST studied the following material and needs to verify their understanding.\n")
+	fmt.Fprintf(&b, "You must allocate exactly %d questions across the knowledge components below.\n\n", totalCount)
+	fmt.Fprintf(&b, "Default question type: %s\n", typePreference)
+	b.WriteString("Supported types: multiple-choice, multi-select, true-false, multi-true-false, short-answer, ordering\n\n")
+	if strings.TrimSpace(classContext) != "" {
+		b.WriteString("Class assessment context:\n")
+		b.WriteString(classContext)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Rules:\n")
+	b.WriteString("- This is targeted review of recently studied material: treat ALL components as equally important.\n")
+	b.WriteString("- Do NOT use accuracy or attempt history to deprioritise components — every item deserves coverage.\n")
+	b.WriteString("- Balance your plan across three layers of understanding:\n")
+	b.WriteString("  1. BIG PICTURE — overarching concepts, purpose, and how sections connect to each other.\n")
+	b.WriteString("  2. KEY CONCEPTS — definitions, formulas, procedures, and core factual items.\n")
+	b.WriteString("  3. SPECIFIC DETAILS — edge cases, exceptions, subtle distinctions, and application scenarios.\n")
+	b.WriteString("- Allocate roughly one-third of questions to each layer, adjusting based on component density.\n")
+	b.WriteString("- Prefer angles that test whether the student truly understands the material, not just surface recall.\n")
+	b.WriteString("  Good angles: \"explain why\", \"distinguish between\", \"what happens if\", \"apply to a new scenario\",\n")
+	b.WriteString("  \"common misconception\", \"trace the cause-effect chain\", \"connect component X with component Y\".\n")
+	b.WriteString("- When multiple components share concepts, create at least one directive with a cross-component angle.\n")
+	b.WriteString("- You MAY choose a different question type per component if the content suits it better.\n")
+	b.WriteString("- The sum of question_count across all directives MUST equal the requested total.\n\n")
+
+	// Group candidates by section, same as OrchestratorPrompt, but show full content.
+	type sectionGroup struct {
+		Title      string
+		Summary    string
+		Concepts   []string
+		Candidates []OrchestratorCandidate
+		Indices    []int
+	}
+	var sectionOrder []string
+	groups := make(map[string]*sectionGroup)
+	for i, c := range candidates {
+		g, ok := groups[c.SectionID]
+		if !ok {
+			g = &sectionGroup{Title: c.SectionTitle, Summary: c.SectionSummary}
+			groups[c.SectionID] = g
+			sectionOrder = append(sectionOrder, c.SectionID)
+		}
+		g.Candidates = append(g.Candidates, c)
+		g.Indices = append(g.Indices, i+1)
+		// Accumulate distinct section-level concepts from components.
+		for _, concept := range c.Concepts {
+			found := false
+			for _, existing := range g.Concepts {
+				if strings.EqualFold(existing, concept) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				g.Concepts = append(g.Concepts, concept)
+			}
+		}
+	}
+
+	b.WriteString("Material (full component content — no summaries truncated):\n")
+	for _, secID := range sectionOrder {
+		g := groups[secID]
+		fmt.Fprintf(&b, "\n── Section: %q (id: %s)\n", g.Title, secID)
+		if g.Summary != "" {
+			fmt.Fprintf(&b, "   Summary: %s\n", g.Summary)
+		}
+		if len(g.Concepts) > 0 {
+			fmt.Fprintf(&b, "   Concepts: %s\n", strings.Join(g.Concepts, ", "))
+		}
+		b.WriteString("\n")
+		for j, c := range g.Candidates {
+			fmt.Fprintf(&b, "  [%d] component_id=%q kind=%s\n      %s\n",
+				g.Indices[j], c.ComponentID, c.Kind, c.Content)
+		}
+	}
+	b.WriteString("\nRespond with ONLY a JSON array (no prose, no markdown fences):\n")
+	b.WriteString("[\n  {\n    \"component_id\": \"<id>\",\n    \"section_id\": \"<id>\",\n    \"section_title\": \"<title>\",\n    \"question_count\": 1,\n    \"question_types\": [\"<type>\"],\n    \"angle\": \"<framing hint>\"\n  }\n]\n")
+	if customContext != "" {
+		b.WriteString("\nAdditional instructions:\n" + customContext + "\n")
+	}
+	return b.String()
+}
+
 // ComponentQuestionPrompt builds the prompt sent to an individual component
 // question agent.  The agent must return a YAML list of QuizSection items.
 func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string) string {

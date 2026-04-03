@@ -77,7 +77,7 @@ func (m model) resize(width, height int) model {
 	}
 
 	m.chat = m.chat.resize(innerWidth)
-	m.classes = m.classes.resize(innerWidth)
+	m.classes = m.classes.resize(innerWidth, bodyHeight)
 	m.knowledge = m.knowledge.resize(innerWidth, bodyHeight)
 	m.settings = m.settings.resize(innerWidth)
 	m.quizDashboard = m.quizDashboard.resize(innerWidth, bodyHeight)

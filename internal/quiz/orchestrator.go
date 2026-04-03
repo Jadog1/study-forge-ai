@@ -100,6 +100,76 @@ func runOrchestratorAgent(
 	return nil, fmt.Errorf("orchestrator agent exceeded %d steps without producing valid output", maxSteps)
 }
 
+// runFocusedOrchestratorAgent is like runOrchestratorAgent but designed for
+// focused quiz mode.  It exposes the full content of every candidate component
+// (no truncation) and instructs the orchestrator to plan comprehensive coverage
+// across big-picture, key-concept, and specific-detail layers rather than
+// prioritising weak components.
+func runFocusedOrchestratorAgent(
+	class string,
+	classContext string,
+	candidates []ComponentScore,
+	totalCount int,
+	typePreference string,
+	provider plugins.AIProvider,
+	cfg *config.Config,
+	onProgress func(ProgressEvent),
+) ([]OrchestratorDirective, error) {
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no knowledge components found for class %q — run 'sfa ingest' first", class)
+	}
+
+	// Build candidate list for the prompt with full component content.
+	pCandidates := make([]prompts.OrchestratorCandidate, len(candidates))
+	for i, s := range candidates {
+		pCandidates[i] = prompts.OrchestratorCandidate{
+			ComponentID:    s.Component.ID,
+			SectionID:      s.Section.ID,
+			SectionTitle:   s.Section.Title,
+			SectionSummary: s.Section.Summary,
+			Kind:           s.Component.Kind,
+			Content:        s.Component.Content, // full content, no truncation
+			Concepts:       s.Component.Concepts,
+		}
+	}
+
+	prompt := prompts.FocusedOrchestratorPrompt(class, classContext, pCandidates, totalCount, typePreference, cfg.CustomPromptContext)
+
+	if onProgress != nil {
+		onProgress(ProgressEvent{Label: "Orchestrator", Detail: "Planning focused coverage"})
+	}
+
+	const maxSteps = 4
+	transcript := prompt
+	for step := 0; step < maxSteps; step++ {
+		resp, err := provider.Generate(transcript)
+		if err != nil {
+			return nil, fmt.Errorf("focused orchestrator agent: %w", err)
+		}
+
+		directives, parseErr := parseOrchestratorResponse(resp)
+		if parseErr != nil {
+			transcript += fmt.Sprintf(
+				"\n\nYour response could not be parsed as JSON:\n%v\n\nRespond with ONLY a valid JSON array of directive objects.",
+				parseErr,
+			)
+			continue
+		}
+		if len(directives) == 0 {
+			transcript += "\n\nThe directive list is empty. Return at least one directive.\n"
+			continue
+		}
+
+		directives = normalizeDirectiveCount(directives, totalCount)
+
+		if onProgress != nil {
+			onProgress(ProgressEvent{Label: "Orchestrator", Detail: fmt.Sprintf("%d directive(s) planned", len(directives)), Done: true})
+		}
+		return directives, nil
+	}
+	return nil, fmt.Errorf("focused orchestrator agent exceeded %d steps without producing valid output", maxSteps)
+}
+
 func parseOrchestratorResponse(resp string) ([]OrchestratorDirective, error) {
 	s := strings.TrimSpace(resp)
 	// Strip markdown fences.

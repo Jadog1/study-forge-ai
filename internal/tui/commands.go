@@ -206,6 +206,9 @@ func runQuizCmd(class string, opts quiz.QuizOptions, orc *orchestrator.Orchestra
 			sfqNote += fmt.Sprintf("\n  Session sync warning: %s", syncErr)
 		} else {
 			sfqNote += fmt.Sprintf("\n  Imported sessions: %d  Pending tracked quizzes: %d", report.ImportedSessions, report.PendingQuizzes)
+			if report.UnmappedAnswers > 0 {
+				sfqNote += fmt.Sprintf("  Unmapped answers: %d", report.UnmappedAnswers)
+			}
 		}
 		stream <- aiStreamEvent{part: fmt.Sprintf("Quiz saved: %s\n  Quiz ID: %s\n  Title: %s\n  Questions: %d%s", path, quizID, q.Title, len(q.Sections), sfqNote), done: true}
 	}()
@@ -276,7 +279,7 @@ func loadQuizDashboardCmd() tea.Cmd {
 // and section/component history.
 func syncTrackedSessionsCmd() tea.Cmd {
 	return func() tea.Msg {
-		report, err := tracking.SyncTrackedQuizSessions()
+		report, err := tracking.SyncTrackedQuizSessionsWithOptions(tracking.SyncOptions{BackfillImported: true})
 		return trackedSyncDoneMsg{report: report, err: err}
 	}
 }

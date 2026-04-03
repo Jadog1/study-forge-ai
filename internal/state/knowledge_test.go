@@ -339,3 +339,134 @@ func TestAppendQuizQuestionHistory_UnknownSectionIDFallsBackToComponentSection(t
 		t.Fatalf("expected section history via unknown-section fallback, got %#v", updatedSec.Sections)
 	}
 }
+
+func TestAppendQuizQuestionHistory_DeduplicatesSameAttemptQuestionAndTimestamp(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", origHome)
+		_ = os.Setenv("USERPROFILE", origUserProfile)
+	})
+	_ = os.Setenv("HOME", tmp)
+	_ = os.Setenv("USERPROFILE", tmp)
+
+	if _, err := config.EnsureInitialized(); err != nil {
+		t.Fatalf("ensure initialized: %v", err)
+	}
+
+	secIdx := &SectionIndex{SchemaVersion: 1}
+	secIdx.AddOrUpdate(Section{ID: "sec-1", Class: "math", Title: "Section"})
+	cmpIdx := &ComponentIndex{SchemaVersion: 1}
+	cmpIdx.AddOrUpdate(Component{ID: "cmp-1", SectionID: "sec-1", Class: "math", Kind: "fact", Content: "fact"})
+	if err := SaveSectionIndex(secIdx); err != nil {
+		t.Fatalf("save section index: %v", err)
+	}
+	if err := SaveComponentIndex(cmpIdx); err != nil {
+		t.Fatalf("save component index: %v", err)
+	}
+
+	answeredAt := time.Now().UTC().Truncate(time.Second)
+	quizDoc := Quiz{Class: "math", Sections: []QuizSection{{
+		ID:          "q-001",
+		Question:    "Question",
+		Answer:      "Answer",
+		SectionID:   "sec-1",
+		ComponentID: "cmp-1",
+	}}}
+	results := QuizResults{QuizID: "attempt-1", CompletedAt: answeredAt, Results: []QuizResult{{
+		QuestionID:  "q-001",
+		Correct:     true,
+		UserAnswer:  "Answer",
+		AnsweredAt:  answeredAt,
+		SectionID:   "sec-1",
+		ComponentID: "cmp-1",
+	}}}
+
+	if err := AppendQuizQuestionHistory("math", quizDoc, results); err != nil {
+		t.Fatalf("append quiz history first run: %v", err)
+	}
+	if err := AppendQuizQuestionHistory("math", quizDoc, results); err != nil {
+		t.Fatalf("append quiz history second run: %v", err)
+	}
+
+	updatedSec, err := LoadSectionIndex()
+	if err != nil {
+		t.Fatalf("load section index: %v", err)
+	}
+	updatedCmp, err := LoadComponentIndex()
+	if err != nil {
+		t.Fatalf("load component index: %v", err)
+	}
+
+	if len(updatedSec.Sections[0].QuestionHistory) != 1 {
+		t.Fatalf("expected deduped section history count 1, got %d", len(updatedSec.Sections[0].QuestionHistory))
+	}
+	if len(updatedCmp.Components[0].QuestionHistory) != 1 {
+		t.Fatalf("expected deduped component history count 1, got %d", len(updatedCmp.Components[0].QuestionHistory))
+	}
+}
+
+func TestAppendQuizQuestionHistory_UsesResultProvenanceWhenQuestionLookupMisses(t *testing.T) {
+	tmp := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", origHome)
+		_ = os.Setenv("USERPROFILE", origUserProfile)
+	})
+	_ = os.Setenv("HOME", tmp)
+	_ = os.Setenv("USERPROFILE", tmp)
+
+	if _, err := config.EnsureInitialized(); err != nil {
+		t.Fatalf("ensure initialized: %v", err)
+	}
+
+	secIdx := &SectionIndex{SchemaVersion: 1}
+	secIdx.AddOrUpdate(Section{ID: "sec-1", Class: "math", Title: "Section"})
+	cmpIdx := &ComponentIndex{SchemaVersion: 1}
+	cmpIdx.AddOrUpdate(Component{ID: "cmp-1", SectionID: "sec-1", Class: "math", Kind: "fact", Content: "fact"})
+	if err := SaveSectionIndex(secIdx); err != nil {
+		t.Fatalf("save section index: %v", err)
+	}
+	if err := SaveComponentIndex(cmpIdx); err != nil {
+		t.Fatalf("save component index: %v", err)
+	}
+
+	quizDoc := Quiz{Class: "math", Sections: []QuizSection{{
+		ID:       "q-001",
+		Question: "Question",
+		Answer:   "Answer",
+	}}}
+	results := QuizResults{QuizID: "attempt-2", CompletedAt: time.Now().UTC(), Results: []QuizResult{{
+		QuestionID:  "q-xyz",
+		Correct:     false,
+		UserAnswer:  "wrong",
+		AnsweredAt:  time.Now().UTC(),
+		SectionID:   "sec-1",
+		ComponentID: "cmp-1",
+	}}}
+
+	if err := AppendQuizQuestionHistory("math", quizDoc, results); err != nil {
+		t.Fatalf("append quiz history: %v", err)
+	}
+
+	updatedSec, err := LoadSectionIndex()
+	if err != nil {
+		t.Fatalf("load section index: %v", err)
+	}
+	updatedCmp, err := LoadComponentIndex()
+	if err != nil {
+		t.Fatalf("load component index: %v", err)
+	}
+
+	if len(updatedSec.Sections[0].QuestionHistory) != 1 {
+		t.Fatalf("expected section history from result provenance, got %d", len(updatedSec.Sections[0].QuestionHistory))
+	}
+	if len(updatedCmp.Components[0].QuestionHistory) != 1 {
+		t.Fatalf("expected component history from result provenance, got %d", len(updatedCmp.Components[0].QuestionHistory))
+	}
+	if updatedSec.Sections[0].QuestionHistory[0].QuestionID != "q-xyz" {
+		t.Fatalf("expected stored fallback question id q-xyz, got %s", updatedSec.Sections[0].QuestionHistory[0].QuestionID)
+	}
+}

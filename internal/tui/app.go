@@ -141,7 +141,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Tracked sync failed: " + msg.err.Error()
 			return m, nil
 		}
-		m.status = "Tracked sync complete: imported " + strconv.Itoa(msg.report.ImportedSessions) + ", pending " + strconv.Itoa(msg.report.PendingQuizzes)
+		m.status = "Tracked sync complete: imported " + strconv.Itoa(msg.report.ImportedSessions) + ", backfilled " + strconv.Itoa(msg.report.BackfilledSessions) + ", pending " + strconv.Itoa(msg.report.PendingQuizzes)
+		if msg.report.UnmappedAnswers > 0 {
+			m.status += ", unmapped answers " + strconv.Itoa(msg.report.UnmappedAnswers)
+		}
 		if m.activeTab == tabQuizDashboard {
 			m.quizDashboard = m.quizDashboard.startLoading()
 			return m, loadQuizDashboardCmd()
@@ -423,7 +426,7 @@ func (m model) View() string {
 	body = lipgloss.NewStyle().Width(bodyInnerWidth).Height(bodyHeight).MaxHeight(bodyHeight).MaxWidth(bodyInnerWidth).Render(body)
 	body = bodyPanelStyle.Render(body)
 
-	footerStatus := statusBarStyle.Render("Status: " + m.status)
+	footerStatusRaw := "Status: " + m.status
 	footerHints := dimStyle.Render("Tab/Shift+Tab switch  •  Ctrl+P actions  •  Esc cancel  •  q quit")
 	footerTone := infoBannerStyle
 	statusText := strings.ToLower(m.status)
@@ -434,7 +437,7 @@ func (m model) View() string {
 		footerTone = warnBannerStyle
 	}
 	footer := footerBarStyle.Width(footerWidth).Render(
-		footerTone.Render(truncateWidth(footerStatus, footerWidth-2)) + "\n" +
+		footerTone.Render(truncateWidth(footerStatusRaw, footerWidth-2)) + "\n" +
 			lipgloss.NewStyle().Width(footerWidth-2).MaxWidth(footerWidth-2).Render(footerHints),
 	)
 

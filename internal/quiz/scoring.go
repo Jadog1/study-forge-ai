@@ -3,10 +3,12 @@ package quiz
 import (
 	"math"
 	"math/rand"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/state"
 )
 
@@ -176,6 +178,81 @@ func SelectCandidatesDiversified(scores []ComponentScore, maxN int, explorationR
 	}
 	out = append(out, pool[:remaining]...)
 	return out
+}
+
+// applyCoverageWeighting reweights scores based on class coverage settings.
+// It keeps backward compatibility by returning scores unchanged when scope is nil.
+func applyCoverageWeighting(scores []ComponentScore, scope *classpkg.CoverageScope, roster *classpkg.NoteRoster) []ComponentScore {
+	if len(scores) == 0 || scope == nil || len(scope.Groups) == 0 {
+		return scores
+	}
+	out := make([]ComponentScore, 0, len(scores))
+	for _, score := range scores {
+		weight, matched := coverageWeightForScore(score, scope, roster)
+		if !matched {
+			if scope.ExcludeUnmatched {
+				continue
+			}
+			out = append(out, score)
+			continue
+		}
+		if weight < 0 {
+			weight = 0
+		}
+		score.Score = score.Score * weight
+		out = append(out, score)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func coverageWeightForScore(score ComponentScore, scope *classpkg.CoverageScope, roster *classpkg.NoteRoster) (float64, bool) {
+	bestWeight := 0.0
+	matched := false
+	for _, group := range scope.Groups {
+		if group.Weight < 0 {
+			continue
+		}
+		patterns := classpkg.ResolveGroupPatterns(group, roster)
+		patternMatched := matchesAnySourcePattern(score, patterns)
+		tagMatched := hasAnyTag(score.Component.Tags, group.Tags) || hasAnyTag(score.Section.Tags, group.Tags)
+		if !patternMatched && !tagMatched {
+			continue
+		}
+		if !matched || group.Weight > bestWeight {
+			bestWeight = group.Weight
+		}
+		matched = true
+	}
+	if !matched {
+		return 1, false
+	}
+	return bestWeight, true
+}
+
+func matchesAnySourcePattern(score ComponentScore, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	sourcePaths := append([]string{}, score.Component.SourcePaths...)
+	sourcePaths = append(sourcePaths, score.Section.SourcePaths...)
+	for i := range sourcePaths {
+		sourcePaths[i] = strings.ToLower(filepath.ToSlash(strings.TrimSpace(sourcePaths[i])))
+	}
+	for _, pattern := range patterns {
+		needle := strings.ToLower(filepath.ToSlash(strings.TrimSpace(pattern)))
+		if needle == "" {
+			continue
+		}
+		for _, source := range sourcePaths {
+			if strings.Contains(source, needle) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func recentHistoryEntries(history []state.QuestionHistoryEntry, n int) []state.QuestionHistoryEntry {

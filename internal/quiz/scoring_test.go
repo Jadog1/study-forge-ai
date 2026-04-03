@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/state"
 )
 
@@ -197,5 +198,56 @@ func TestThoughtProvokingRate_TracksHigherOrderQuestionShare(t *testing.T) {
 	rate := thoughtProvokingRate(history)
 	if rate < 0.49 || rate > 0.51 {
 		t.Fatalf("expected thought-provoking rate near 0.50, got %.2f", rate)
+	}
+}
+
+func TestApplyCoverageWeighting_PrioritizesPrimaryGroup(t *testing.T) {
+	scores := []ComponentScore{
+		{
+			Component: state.Component{ID: "cmp-week1", SourcePaths: []string{"/notes/week 1 lecture.md"}},
+			Section:   state.Section{SourcePaths: []string{"/notes/week 1 lecture.md"}},
+			Score:     0.95,
+		},
+		{
+			Component: state.Component{ID: "cmp-week5", SourcePaths: []string{"/notes/week 5 lecture.md"}},
+			Section:   state.Section{SourcePaths: []string{"/notes/week 5 lecture.md"}},
+			Score:     0.80,
+		},
+	}
+	roster := &classpkg.NoteRoster{Entries: []classpkg.NoteRosterEntry{
+		{Label: "Week 5", SourcePattern: "week 5"},
+		{Label: "Week 1", SourcePattern: "week 1"},
+	}}
+	scope := &classpkg.CoverageScope{Groups: []classpkg.ScopeGroup{
+		{Labels: []string{"Week 5"}, Weight: 1.0},
+		{Labels: []string{"Week 1"}, Weight: 0.30},
+	}}
+
+	weighted := applyCoverageWeighting(scores, scope, roster)
+	if len(weighted) != 2 {
+		t.Fatalf("expected 2 weighted scores, got %d", len(weighted))
+	}
+	if weighted[0].Component.ID != "cmp-week5" {
+		t.Fatalf("expected week 5 component to rank first, got %q", weighted[0].Component.ID)
+	}
+}
+
+func TestApplyCoverageWeighting_ExcludeUnmatchedDropsCandidates(t *testing.T) {
+	scores := []ComponentScore{
+		{Component: state.Component{ID: "cmp-a", SourcePaths: []string{"/notes/week 2.md"}}, Score: 0.9},
+		{Component: state.Component{ID: "cmp-b", SourcePaths: []string{"/notes/week 7.md"}}, Score: 0.8},
+	}
+	roster := &classpkg.NoteRoster{Entries: []classpkg.NoteRosterEntry{{Label: "Week 7", SourcePattern: "week 7"}}}
+	scope := &classpkg.CoverageScope{
+		ExcludeUnmatched: true,
+		Groups:           []classpkg.ScopeGroup{{Labels: []string{"Week 7"}, Weight: 1.0}},
+	}
+
+	weighted := applyCoverageWeighting(scores, scope, roster)
+	if len(weighted) != 1 {
+		t.Fatalf("expected 1 remaining candidate, got %d", len(weighted))
+	}
+	if weighted[0].Component.ID != "cmp-b" {
+		t.Fatalf("expected cmp-b to remain, got %q", weighted[0].Component.ID)
 	}
 }
