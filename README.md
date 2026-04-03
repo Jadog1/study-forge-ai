@@ -1,8 +1,8 @@
 # study-agent
 
-An AI-powered study assistant written in Go with a baked-in Bubble Tea workflow.
-It ingests notes, extracts structured knowledge, generates quizzes, tracks
-performance, streams chat responses in-app, and integrates sfq search.
+An AI-powered study assistant written in Go. It ingests notes, extracts
+structured knowledge, generates adaptive quizzes, tracks performance, and
+streams chat responses — available as both a terminal TUI and a web interface.
 
 ![Knowledge Pipeline](./docs/flowcharts/Knowledge-Pipeline.png)
 ![Quiz Pipeline](./docs/flowcharts/Quiz-Pipeline.png)
@@ -14,6 +14,7 @@ performance, streams chat responses in-app, and integrates sfq search.
 ## Requirements
 
 - Go 1.21+
+- Node.js 20+ and npm (for the web UI)
 - [`studyforge`](https://github.com/Jadog1/study-forge) installed and on `$PATH`
 - An API key for OpenAI, Anthropic Claude, VoyageAI, or a locally running Ollama instance
 
@@ -25,40 +26,77 @@ performance, streams chat responses in-app, and integrates sfq search.
 go install ./cmd/sfa
 ```
 
-Launch the interactive workflow:
+---
+
+## Web UI
+
+The web interface provides the full Study Forge AI experience in the browser
+with interactive charts, rich text editing, and a modern dashboard.
+
+### Quick start (production)
+
+```bash
+# 1. Build the frontend
+cd web && npm install && npm run build && cd ..
+
+# 2. Start the server (serves both API and frontend)
+sfa web
+```
+
+This opens `http://localhost:8080` in your browser automatically.
+
+### Development mode
+
+Run the Go API server and Vite dev server separately for hot-reload:
+
+```bash
+# Terminal 1 — API server
+sfa web --dev
+
+# Terminal 2 — Vite dev server with hot-reload
+cd web && npm run dev
+```
+
+The Vite dev server runs on `http://localhost:5173` and proxies `/api` requests
+to the Go server on port 8080.
+
+### Web command flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--port, -p` | `8080` | Port for the HTTP server |
+| `--dev` | `false` | Development mode (API only, frontend via Vite) |
+| `--no-browser` | `false` | Don't auto-open browser on startup |
+
+### Web UI pages
+
+| Page | Description |
+| --- | --- |
+| **Chat** | Streaming AI chat with markdown rendering and tool-call indicators |
+| **Knowledge** | Browse ingested sections and components with search, filtering, and quiz performance metrics |
+| **Quiz Dashboard** | Analytics with charts, quiz history, coverage tracking, and quiz generation with live progress |
+| **Classes** | Full class management — syllabus, context profiles, note roster, coverage scopes |
+| **Usage** | Token and cost analytics with time filters, per-model breakdown, trend charts, and CSV export |
+| **Settings** | Provider/model configuration, per-role overrides, embeddings, SFQ settings, and model pricing |
+
+---
+
+## Terminal TUI
+
+The original terminal experience is still available as the default command:
 
 ```bash
 sfa
 ```
 
-Example kicking off local LLM:
-
-```bash
-python ./example_local_llm/llm.py
-```
-
----
-
-## Interactive Workflow
-
-The default experience is a multi-pane Bubble Tea app:
-
 - Chat: stream model responses in a chat window
+- Knowledge: browse sections and components
+- Quiz Dashboard: quiz metrics and tracked sessions
 - Classes: create/select classes and attach context files
+- Usage: token and cost tracking
 - Settings: manage provider keys/models and sfq command
-- SFQ Search: run sfq plugin searches without leaving the app
 
-Controls:
-
-- tab / shift+tab: switch panes
-- q: quit
-- esc: leave edit mode
-
-Pane-specific controls:
-
-- Classes pane: n (new class), a (add context file), up/down (select class)
-- Settings pane: up/down (select setting), e (edit), s (save config)
-- SFQ pane: enter to run search
+Controls: `Tab`/`Shift+Tab` to switch panes, `q` to quit, `Esc` to leave edit mode, `Ctrl+P` for command palette.
 
 ## CLI Quick Start
 
@@ -100,17 +138,18 @@ sfa adapt linear-algebra
 
 | Command | Description |
 | --- | --- |
+| `sfa` | Launch the terminal TUI |
+| `sfa web` | Start the web UI server |
 | `sfa init` | Initialise `~/.study-forge-ai/` app data |
 | `sfa ingest <path> [--class <name>]` | Ingest and process notes from a folder |
 | `sfa export [output-path] [--class <name>] [--include-embeddings]` | Export sections/components as shareable JSON |
-| `sfa generate <class> [--tags ...]` | Generate a quiz from ingested notes |
-| `sfa study <quiz-path>` | Print quiz questions to the terminal |
-| `sfa complete <quiz-path>` | Record quiz results interactively |
-| `sfa adapt <class>` | Generate adaptive quiz from performance data |
+| `sfa quiz <class>` | Generate a quiz from ingested notes |
 | `sfa quiz-benchmark <class> [--models ...] [--runs N]` | Compare quiz-generation reliability and cost across Claude models |
 | `sfa search [--tags ...] [--class ...]` | Search ingested notes |
 | `sfa class create <name>` | Create a new class |
 | `sfa class list` | List all classes |
+| `sfa usage` | Print usage totals |
+| `sfa pricing list\|set\|unset\|detect` | Manage model pricing |
 
 ---
 

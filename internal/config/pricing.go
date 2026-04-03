@@ -2,8 +2,8 @@ package config
 
 // ModelPrice holds per-million-token pricing for an AI model in USD.
 type ModelPrice struct {
-	InputPerMillion  float64 `yaml:"input_per_million"`
-	OutputPerMillion float64 `yaml:"output_per_million"`
+	InputPerMillion  float64 `yaml:"input_per_million" json:"input_per_million"`
+	OutputPerMillion float64 `yaml:"output_per_million" json:"output_per_million"`
 }
 
 // builtInPrices is a table of approximate well-known model prices in USD per

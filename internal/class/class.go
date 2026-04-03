@@ -44,10 +44,10 @@ type Context struct {
 // ContextProfile describes one assessment-specific class context profile.
 // Add new entries to defaultContextProfiles to extend supported profile kinds.
 type ContextProfile struct {
-	Kind                string
-	Label               string
-	FileName            string
-	DefaultQuestionType string
+	Kind                string `json:"kind" yaml:"kind"`
+	Label               string `json:"label" yaml:"label"`
+	FileName            string `json:"file_name" yaml:"file_name"`
+	DefaultQuestionType string `json:"default_question_type" yaml:"default_question_type"`
 }
 
 var defaultContextProfiles = []ContextProfile{

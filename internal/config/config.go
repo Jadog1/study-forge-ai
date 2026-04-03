@@ -28,77 +28,77 @@ type InitResult struct {
 type AgentModelConfig struct {
 	// Provider selects the backend for this role ("openai", "claude", "local").
 	// Empty string means inherit from Config.Provider.
-	Provider string `yaml:"provider,omitempty"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
 	// Model selects the specific model for this role.
 	// Empty string means use the provider's configured default model.
-	Model string `yaml:"model,omitempty"`
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
 }
 
 // AgentModels holds optional per-role model overrides.  Any role left at its
 // zero value inherits the global provider and model settings.
 type AgentModels struct {
-	Chat             AgentModelConfig `yaml:"chat,omitempty"`
-	Ingestion        AgentModelConfig `yaml:"ingestion,omitempty"`
-	QuizOrchestrator AgentModelConfig `yaml:"quiz_orchestrator,omitempty"`
-	QuizComponent    AgentModelConfig `yaml:"quiz_component,omitempty"`
+	Chat             AgentModelConfig `yaml:"chat,omitempty" json:"chat,omitempty"`
+	Ingestion        AgentModelConfig `yaml:"ingestion,omitempty" json:"ingestion,omitempty"`
+	QuizOrchestrator AgentModelConfig `yaml:"quiz_orchestrator,omitempty" json:"quiz_orchestrator,omitempty"`
+	QuizComponent    AgentModelConfig `yaml:"quiz_component,omitempty" json:"quiz_component,omitempty"`
 }
 
 // Config is the top-level configuration structure.
 type Config struct {
 	// Provider selects the active AI backend: "openai", "claude", or "local".
-	Provider   string           `yaml:"provider"`
-	Embeddings EmbeddingsConfig `yaml:"embeddings"`
-	OpenAI     OpenAIConfig     `yaml:"openai"`
-	Claude     ClaudeConfig     `yaml:"claude"`
-	Voyage     VoyageConfig     `yaml:"voyage"`
-	Local      LocalConfig      `yaml:"local"`
-	SFQ        SFQConfig        `yaml:"sfq"`
+	Provider   string           `yaml:"provider" json:"provider"`
+	Embeddings EmbeddingsConfig `yaml:"embeddings" json:"embeddings"`
+	OpenAI     OpenAIConfig     `yaml:"openai" json:"openai"`
+	Claude     ClaudeConfig     `yaml:"claude" json:"claude"`
+	Voyage     VoyageConfig     `yaml:"voyage" json:"voyage"`
+	Local      LocalConfig      `yaml:"local" json:"local"`
+	SFQ        SFQConfig        `yaml:"sfq" json:"sfq"`
 	// AgentModels allows different provider/model combinations per agent role.
 	// Leave a role at its zero value to inherit the global provider settings.
-	AgentModels AgentModels `yaml:"agent_models,omitempty"`
+	AgentModels AgentModels `yaml:"agent_models,omitempty" json:"agent_models,omitempty"`
 	// CustomPromptContext is appended verbatim to every AI prompt.
 	// Use it to steer output style (e.g. "prefer real-world analogies").
-	CustomPromptContext string `yaml:"custom_prompt_context,omitempty"`
+	CustomPromptContext string `yaml:"custom_prompt_context,omitempty" json:"custom_prompt_context,omitempty"`
 	// ModelPrices stores per-million-token pricing overrides for AI models.
 	// Keys are model name strings (e.g. "gpt-4o-mini").
 	// Built-in prices for well-known models are provided automatically.
-	ModelPrices map[string]ModelPrice `yaml:"model_prices,omitempty"`
+	ModelPrices map[string]ModelPrice `yaml:"model_prices,omitempty" json:"model_prices,omitempty"`
 }
 
 // EmbeddingsConfig selects which provider/model to use for embeddings.
 type EmbeddingsConfig struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
+	Provider string `yaml:"provider" json:"provider"`
+	Model    string `yaml:"model" json:"model"`
 }
 
 // OpenAIConfig holds credentials and model selection for OpenAI.
 type OpenAIConfig struct {
-	APIKey string `yaml:"-"`
-	Model  string `yaml:"model"`
+	APIKey string `yaml:"-" json:"-"`
+	Model  string `yaml:"model" json:"model"`
 }
 
 // ClaudeConfig holds credentials and model selection for Anthropic Claude.
 type ClaudeConfig struct {
-	APIKey string `yaml:"-"`
-	Model  string `yaml:"model"`
+	APIKey string `yaml:"-" json:"-"`
+	Model  string `yaml:"model" json:"model"`
 }
 
 // VoyageConfig holds credentials and model selection for VoyageAI.
 type VoyageConfig struct {
-	APIKey string `yaml:"-"`
-	Model  string `yaml:"model"`
+	APIKey string `yaml:"-" json:"-"`
+	Model  string `yaml:"model" json:"model"`
 }
 
 // LocalConfig points to a locally-running Ollama (or compatible) instance.
 type LocalConfig struct {
-	Endpoint           string `yaml:"endpoint"`
-	EmbeddingsEndpoint string `yaml:"embeddings_endpoint,omitempty"`
-	Model              string `yaml:"model"`
+	Endpoint           string `yaml:"endpoint" json:"endpoint"`
+	EmbeddingsEndpoint string `yaml:"embeddings_endpoint,omitempty" json:"embeddings_endpoint,omitempty"`
+	Model              string `yaml:"model" json:"model"`
 }
 
 // SFQConfig controls how study-agent invokes the sfq plugin search command.
 type SFQConfig struct {
-	Command string `yaml:"command"`
+	Command string `yaml:"command" json:"command"`
 }
 
 // RootDir returns the hard-coded per-user application data directory.
