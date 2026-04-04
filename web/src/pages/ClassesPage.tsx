@@ -5,6 +5,7 @@ import {
   BookOpen,
   ChevronRight,
   FileText,
+  GripVertical,
   Layers,
   Loader2,
   Plus,
@@ -12,6 +13,7 @@ import {
   Search,
   Settings,
   Trash2,
+  WandSparkles,
   X,
 } from 'lucide-react';
 import {
@@ -36,6 +38,89 @@ const PIE_COLORS = [
   '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b',
   '#10b981', '#3b82f6', '#ef4444', '#14b8a6',
 ];
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
+function normalizeRosterEntries(entries: RosterEntry[]): RosterEntry[] {
+  return entries.map((entry, i) => ({ ...entry, order: i + 1 }));
+}
+
+function extractDateValue(value: string): number | null {
+  const text = value.trim();
+  if (!text) return null;
+
+  const isoMatch = text.match(/\b(\d{4}-\d{1,2}-\d{1,2})\b/);
+  if (isoMatch) {
+    const ts = Date.parse(isoMatch[1]);
+    if (!Number.isNaN(ts)) return ts;
+  }
+
+  const slashMatch = text.match(/\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/);
+  if (slashMatch) {
+    const ts = Date.parse(slashMatch[1]);
+    if (!Number.isNaN(ts)) return ts;
+  }
+
+  const monthMatch = text.match(
+    /\b(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{1,2}(?:,\s*\d{4})?\b/i,
+  );
+  if (monthMatch) {
+    const ts = Date.parse(monthMatch[0]);
+    if (!Number.isNaN(ts)) return ts;
+  }
+
+  return null;
+}
+
+function extractNumericValue(entry: RosterEntry): number | null {
+  if (typeof entry.week === 'number' && !Number.isNaN(entry.week)) {
+    return entry.week;
+  }
+  const text = `${entry.label} ${entry.source_pattern ?? ''}`;
+  const match = text.match(/\d+(?:\.\d+)?/);
+  if (!match) return null;
+  return Number(match[0]);
+}
+
+function smartOrderRosterEntries(entries: RosterEntry[]): RosterEntry[] {
+  const enriched = entries.map((entry, idx) => {
+    const haystack = `${entry.label} ${entry.source_pattern ?? ''}`;
+    return {
+      entry,
+      idx,
+      dateValue: extractDateValue(haystack),
+      numberValue: extractNumericValue(entry),
+      labelLower: entry.label.toLowerCase(),
+    };
+  });
+
+  enriched.sort((a, b) => {
+    const aHasDate = a.dateValue != null;
+    const bHasDate = b.dateValue != null;
+    if (aHasDate && bHasDate) {
+      if (a.dateValue !== b.dateValue) return (a.dateValue ?? 0) - (b.dateValue ?? 0);
+      return a.labelLower.localeCompare(b.labelLower);
+    }
+    if (aHasDate !== bHasDate) return aHasDate ? -1 : 1;
+
+    const aHasNumber = a.numberValue != null;
+    const bHasNumber = b.numberValue != null;
+    if (aHasNumber && bHasNumber) {
+      if (a.numberValue !== b.numberValue) return (a.numberValue ?? 0) - (b.numberValue ?? 0);
+      return a.labelLower.localeCompare(b.labelLower);
+    }
+    if (aHasNumber !== bHasNumber) return aHasNumber ? -1 : 1;
+
+    const labelCmp = a.labelLower.localeCompare(b.labelLower);
+    if (labelCmp !== 0) return labelCmp;
+    return a.idx - b.idx;
+  });
+
+  return normalizeRosterEntries(enriched.map((item) => item.entry));
+}
 
 type TabId = 'overview' | 'context' | 'roster' | 'coverage';
 
@@ -211,28 +296,57 @@ function OverviewTab({ detail }: { detail: ClassDetail }) {
 // Tab: Context
 // ---------------------------------------------------------------------------
 
-function ContextTab({ detail, className: cls }: { detail: ClassDetail; className: string }) {
+function ContextTab({
+  detail,
+  className: cls,
+  onDetailRefresh,
+}: {
+  detail: ClassDetail;
+  className: string;
+  onDetailRefresh: () => Promise<void>;
+}) {
   const [files, setFiles] = useState<string[]>(
+    detail.context.context_files ?? [],
+  );
+  const [savedFiles, setSavedFiles] = useState<string[]>(
     detail.context.context_files ?? [],
   );
   const [newFile, setNewFile] = useState('');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [activeProfile, setActiveProfile] = useState<string>(
     Object.keys(detail.profiles)[0] ?? '',
   );
   const [profileTexts, setProfileTexts] = useState<Record<string, string>>(
     () => ({ ...detail.profiles }),
   );
+  const [savedProfileTexts, setSavedProfileTexts] = useState<Record<string, string>>(
+    () => ({ ...detail.profiles }),
+  );
   const [profileSaving, setProfileSaving] = useState(false);
 
   useEffect(() => {
-    setFiles(detail.context.context_files ?? []);
-    setProfileTexts({ ...detail.profiles });
+    const nextFiles = detail.context.context_files ?? [];
+    const nextProfiles = { ...detail.profiles };
+    setFiles(nextFiles);
+    setSavedFiles(nextFiles);
+    setProfileTexts(nextProfiles);
+    setSavedProfileTexts(nextProfiles);
+    setError(null);
     const keys = Object.keys(detail.profiles);
-    if (keys.length > 0 && !keys.includes(activeProfile)) {
-      setActiveProfile(keys[0]);
-    }
-  }, [detail, activeProfile]);
+    setActiveProfile((prev) => {
+      if (keys.length === 0) return '';
+      return keys.includes(prev) ? prev : keys[0];
+    });
+  }, [cls, detail]);
+
+  const filesDirty = !arraysEqual(files, savedFiles);
+  const activeProfileDirty =
+    activeProfile !== ''
+      && (profileTexts[activeProfile] ?? '') !== (savedProfileTexts[activeProfile] ?? '');
+  const anyProfileDirty = Object.keys(profileTexts).some(
+    (kind) => (profileTexts[kind] ?? '') !== (savedProfileTexts[kind] ?? ''),
+  );
 
   const handleAddFile = () => {
     const trimmed = newFile.trim();
@@ -246,34 +360,68 @@ function ContextTab({ detail, className: cls }: { detail: ClassDetail; className
 
   const handleSaveFiles = async () => {
     setSaving(true);
+    setError(null);
     try {
       await api.updateClassContext(cls, files);
+      setSavedFiles([...files]);
+      await onDetailRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save context files');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleSaveProfile = async () => {
-    if (!activeProfile) return;
+  const handleSaveProfile = async (profileKind: string) => {
+    if (!profileKind) return;
     setProfileSaving(true);
+    setError(null);
     try {
       await api.updateProfileContext(
         cls,
-        activeProfile,
-        profileTexts[activeProfile] ?? '',
+        profileKind,
+        profileTexts[profileKind] ?? '',
       );
+      setSavedProfileTexts((prev) => ({
+        ...prev,
+        [profileKind]: profileTexts[profileKind] ?? '',
+      }));
+      await onDetailRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save profile context');
     } finally {
       setProfileSaving(false);
     }
   };
 
+  const handleProfileTabClick = async (kind: string) => {
+    if (kind === activeProfile) return;
+    if (activeProfileDirty && !profileSaving) {
+      await handleSaveProfile(activeProfile);
+    }
+    setActiveProfile(kind);
+  };
+
   return (
     <div className="space-y-6">
+      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+        Class context sharpens generation quality by anchoring the model to your files and profile-specific instructions. Changes marked as unsaved stay local until you save.
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
       {/* Context Files */}
       <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="mb-3 text-sm font-semibold text-slate-700">
-          Context Files
-        </h3>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">Context Files</h3>
+          <span className={`text-xs font-medium ${filesDirty ? 'text-amber-600' : 'text-emerald-600'}`}>
+            {filesDirty ? 'Unsaved changes' : 'Saved'}
+          </span>
+        </div>
         <div className="space-y-2">
           {files.map((f) => (
             <div
@@ -316,19 +464,22 @@ function ContextTab({ detail, className: cls }: { detail: ClassDetail; className
         </div>
         <button
           onClick={handleSaveFiles}
-          disabled={saving}
+          disabled={saving || !filesDirty}
           className="mt-3 flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-indigo-700 disabled:opacity-50"
         >
           <Save size={14} />
-          {saving ? 'Saving...' : 'Save Context Files'}
+          {saving ? 'Saving...' : filesDirty ? 'Save Context Files' : 'Context Files Saved'}
         </button>
       </div>
 
       {/* Profile Contexts */}
       <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="mb-3 text-sm font-semibold text-slate-700">
-          Profile Contexts
-        </h3>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">Profile Contexts</h3>
+          <span className={`text-xs font-medium ${anyProfileDirty ? 'text-amber-600' : 'text-emerald-600'}`}>
+            {anyProfileDirty ? 'Unsaved profile edits' : 'All profiles saved'}
+          </span>
+        </div>
         {Object.keys(detail.profiles).length === 0 ? (
           <p className="text-sm text-slate-400 italic">No profiles defined</p>
         ) : (
@@ -337,7 +488,7 @@ function ContextTab({ detail, className: cls }: { detail: ClassDetail; className
               {Object.keys(detail.profiles).map((kind) => (
                 <button
                   key={kind}
-                  onClick={() => setActiveProfile(kind)}
+                  onClick={() => void handleProfileTabClick(kind)}
                   className={`border-b-2 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
                     activeProfile === kind
                       ? 'border-indigo-600 text-indigo-600'
@@ -345,6 +496,9 @@ function ContextTab({ detail, className: cls }: { detail: ClassDetail; className
                   }`}
                 >
                   {kind}
+                  {(profileTexts[kind] ?? '') !== (savedProfileTexts[kind] ?? '') && (
+                    <span className="ml-1 text-amber-600">*</span>
+                  )}
                 </button>
               ))}
             </div>
@@ -360,12 +514,16 @@ function ContextTab({ detail, className: cls }: { detail: ClassDetail; className
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
             <button
-              onClick={handleSaveProfile}
-              disabled={profileSaving}
+              onClick={() => void handleSaveProfile(activeProfile)}
+              disabled={profileSaving || !activeProfileDirty}
               className="mt-2 flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-indigo-700 disabled:opacity-50"
             >
               <Save size={14} />
-              {profileSaving ? 'Saving...' : `Save ${activeProfile} Profile`}
+              {profileSaving
+                ? 'Saving...'
+                : activeProfileDirty
+                  ? `Save ${activeProfile} Profile`
+                  : `${activeProfile} Profile Saved`}
             </button>
           </>
         )}
@@ -378,12 +536,25 @@ function ContextTab({ detail, className: cls }: { detail: ClassDetail; className
 // Tab: Roster
 // ---------------------------------------------------------------------------
 
-function RosterTab({ detail, className: cls }: { detail: ClassDetail; className: string }) {
+function RosterTab({
+  detail,
+  className: cls,
+  onDetailRefresh,
+}: {
+  detail: ClassDetail;
+  className: string;
+  onDetailRefresh: () => Promise<void>;
+}) {
   const [entries, setEntries] = useState<RosterEntry[]>(() => [
     ...detail.roster.entries,
   ]);
+  const [savedEntries, setSavedEntries] = useState<RosterEntry[]>(() => [
+    ...detail.roster.entries,
+  ]);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [newEntry, setNewEntry] = useState<RosterEntry>({
     label: '',
     source_pattern: '',
@@ -395,7 +566,13 @@ function RosterTab({ detail, className: cls }: { detail: ClassDetail; className:
 
   useEffect(() => {
     setEntries([...detail.roster.entries]);
-  }, [detail]);
+    setSavedEntries([...detail.roster.entries]);
+    setError(null);
+  }, [cls, detail]);
+
+  const entriesDirty =
+    JSON.stringify(normalizeRosterEntries(entries))
+    !== JSON.stringify(normalizeRosterEntries(savedEntries));
 
   const handleAdd = () => {
     if (!newEntry.label.trim()) return;
@@ -431,11 +608,33 @@ function RosterTab({ detail, className: cls }: { detail: ClassDetail; className:
 
   const handleSave = async () => {
     setSaving(true);
+    setError(null);
     try {
-      await api.updateRoster(cls, entries);
+      const normalized = normalizeRosterEntries(entries);
+      await api.updateRoster(cls, normalized);
+      setEntries(normalized);
+      setSavedEntries(normalized);
+      await onDetailRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save roster');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSmartOrder = () => {
+    setEntries((prev) => smartOrderRosterEntries(prev));
+  };
+
+  const handleDropOn = (targetIndex: number) => {
+    if (dragIndex == null || dragIndex === targetIndex) return;
+    setEntries((prev) => {
+      const next = [...prev];
+      const [dragged] = next.splice(dragIndex, 1);
+      next.splice(targetIndex, 0, dragged);
+      return normalizeRosterEntries(next);
+    });
+    setDragIndex(null);
   };
 
   const handleTagKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -454,11 +653,33 @@ function RosterTab({ detail, className: cls }: { detail: ClassDetail; className:
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+        The roster controls note sequencing for studying and quiz generation. Drag to reorder manually, or use Smart Order to infer timeline order from dates first, then numbers.
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-700">
-          Note Roster ({entries.length} entries)
-        </h3>
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700">
+            Note Roster ({entries.length} entries)
+          </h3>
+          <p className={`text-xs font-medium ${entriesDirty ? 'text-amber-600' : 'text-emerald-600'}`}>
+            {entriesDirty ? 'Unsaved order/entry changes' : 'Saved'}
+          </p>
+        </div>
         <div className="flex gap-2">
+          <button
+            onClick={handleSmartOrder}
+            className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <WandSparkles size={14} />
+            Smart Order
+          </button>
           <button
             onClick={() => setShowAdd(!showAdd)}
             className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
@@ -468,11 +689,11 @@ function RosterTab({ detail, className: cls }: { detail: ClassDetail; className:
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !entriesDirty}
             className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-indigo-700 disabled:opacity-50"
           >
             <Save size={14} />
-            {saving ? 'Saving...' : 'Save'}
+            {saving ? 'Saving...' : entriesDirty ? 'Save' : 'Saved'}
           </button>
         </div>
       </div>
@@ -600,8 +821,20 @@ function RosterTab({ detail, className: cls }: { detail: ClassDetail; className:
         {entries.map((entry, i) => (
           <div
             key={`${entry.label}-${i}`}
-            className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-3 py-2 shadow-sm transition-colors duration-100 hover:border-slate-200"
+            draggable
+            onDragStart={() => setDragIndex(i)}
+            onDragEnd={() => setDragIndex(null)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => handleDropOn(i)}
+            className={`flex items-center gap-2 rounded-lg border bg-white px-3 py-2 shadow-sm transition-colors duration-100 ${
+              dragIndex === i
+                ? 'border-indigo-300 bg-indigo-50/40'
+                : 'border-slate-100 hover:border-slate-200'
+            }`}
           >
+            <span className="shrink-0 cursor-grab text-slate-400" title="Drag to reorder">
+              <GripVertical size={14} />
+            </span>
             <div className="flex shrink-0 flex-col gap-0.5">
               <button
                 onClick={() => handleMove(i, -1)}
@@ -659,35 +892,95 @@ function RosterTab({ detail, className: cls }: { detail: ClassDetail; className:
 // Tab: Coverage
 // ---------------------------------------------------------------------------
 
-function CoverageTab({ detail, className: cls }: { detail: ClassDetail; className: string }) {
-  const coverageKinds = useMemo(
-    () => Object.keys(detail.coverage),
-    [detail.coverage],
-  );
-  const [activeKind, setActiveKind] = useState(coverageKinds[0] ?? '');
+function CoverageTab({
+  detail,
+  className: cls,
+  onDetailRefresh,
+}: {
+  detail: ClassDetail;
+  className: string;
+  onDetailRefresh: () => Promise<void>;
+}) {
+  const profileKinds = useMemo(() => {
+    const keys = Object.keys(detail.profiles);
+    return keys.length > 0 ? keys : ['quiz', 'exam', 'focused'];
+  }, [detail.profiles]);
+
+  const [activeKind, setActiveKind] = useState(Object.keys(detail.coverage)[0] ?? '');
   const [scopes, setScopes] = useState<Record<string, CoverageScope | null>>(
     () => ({ ...detail.coverage }),
   );
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingKind, setPendingKind] = useState(profileKinds[0] ?? 'quiz');
+  const [dirtyKinds, setDirtyKinds] = useState<Record<string, boolean>>({});
+
+  const coverageKinds = useMemo(() => {
+    const localKinds = Object.keys(scopes);
+    const ordered: string[] = [];
+    for (const kind of profileKinds) {
+      if (localKinds.includes(kind)) ordered.push(kind);
+    }
+    for (const kind of localKinds) {
+      if (!ordered.includes(kind)) ordered.push(kind);
+    }
+    return ordered;
+  }, [profileKinds, scopes]);
 
   useEffect(() => {
     setScopes({ ...detail.coverage });
+    setDirtyKinds({});
+    setError(null);
     const kinds = Object.keys(detail.coverage);
-    if (kinds.length > 0 && !kinds.includes(activeKind)) {
-      setActiveKind(kinds[0]);
+    setActiveKind((prev) => {
+      if (kinds.length === 0) return '';
+      return kinds.includes(prev) ? prev : kinds[0];
+    });
+  }, [cls, detail]);
+
+  useEffect(() => {
+    if (!pendingKind && profileKinds.length > 0) {
+      setPendingKind(profileKinds[0]);
     }
-  }, [detail, activeKind]);
+  }, [pendingKind, profileKinds]);
 
   const scope = scopes[activeKind] ?? null;
 
-  const updateScope = (updated: CoverageScope) =>
+  const updateScope = (updated: CoverageScope) => {
     setScopes({ ...scopes, [activeKind]: updated });
+    setDirtyKinds((prev) => ({ ...prev, [activeKind]: true }));
+  };
+
+  const addScope = () => {
+    const kind = pendingKind.trim();
+    if (!kind) return;
+    if (scopes[kind]) {
+      setActiveKind(kind);
+      return;
+    }
+    setScopes((prev) => ({
+      ...prev,
+      [kind]: {
+        class: cls,
+        kind,
+        exclude_unmatched: false,
+        groups: [],
+      },
+    }));
+    setDirtyKinds((prev) => ({ ...prev, [kind]: true }));
+    setActiveKind(kind);
+  };
 
   const handleSave = async () => {
     if (!scope) return;
     setSaving(true);
+    setError(null);
     try {
       await api.updateCoverage(cls, activeKind, scope);
+      setDirtyKinds((prev) => ({ ...prev, [activeKind]: false }));
+      await onDetailRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save coverage scope');
     } finally {
       setSaving(false);
     }
@@ -727,9 +1020,40 @@ function CoverageTab({ detail, className: cls }: { detail: ClassDetail; classNam
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+        Coverage scopes weight what material each profile emphasizes. Create scopes to focus quizzes and exams on the right units, tags, or source patterns.
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={pendingKind}
+            onChange={(e) => setPendingKind(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            {profileKinds.map((kind) => (
+              <option key={kind} value={kind}>{kind}</option>
+            ))}
+          </select>
+          <button
+            onClick={addScope}
+            className="flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <Plus size={14} />
+            Add Scope
+          </button>
+        </div>
+      </div>
+
       {coverageKinds.length === 0 ? (
         <p className="text-sm text-slate-400 italic">
-          No coverage scopes defined
+          No coverage scopes defined yet. Choose a profile kind above and click Add Scope.
         </p>
       ) : (
         <>
@@ -746,6 +1070,7 @@ function CoverageTab({ detail, className: cls }: { detail: ClassDetail; classNam
                 }`}
               >
                 {kind}
+                {dirtyKinds[kind] && <span className="ml-1 text-amber-600">*</span>}
               </button>
             ))}
           </div>
@@ -783,11 +1108,11 @@ function CoverageTab({ detail, className: cls }: { detail: ClassDetail; classNam
                     </button>
                     <button
                       onClick={handleSave}
-                      disabled={saving}
+                      disabled={saving || !dirtyKinds[activeKind]}
                       className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                     >
                       <Save size={14} />
-                      {saving ? 'Saving...' : 'Save'}
+                      {saving ? 'Saving...' : dirtyKinds[activeKind] ? 'Save' : 'Saved'}
                     </button>
                   </div>
                 </div>
@@ -990,6 +1315,11 @@ export default function ClassesPage() {
     }
   }, []);
 
+  const refreshSelectedDetail = useCallback(async () => {
+    if (!selected) return;
+    await loadDetail(selected);
+  }, [selected, loadDetail]);
+
   useEffect(() => {
     void loadClasses();
   }, [loadClasses]);
@@ -1128,16 +1458,30 @@ export default function ClassesPage() {
               ))}
             </div>
 
-            {activeTab === 'overview' && <OverviewTab detail={detail} />}
-            {activeTab === 'context' && (
-              <ContextTab detail={detail} className={selected} />
-            )}
-            {activeTab === 'roster' && (
-              <RosterTab detail={detail} className={selected} />
-            )}
-            {activeTab === 'coverage' && (
-              <CoverageTab detail={detail} className={selected} />
-            )}
+            <div className={activeTab === 'overview' ? '' : 'hidden'}>
+              <OverviewTab detail={detail} />
+            </div>
+            <div className={activeTab === 'context' ? '' : 'hidden'}>
+              <ContextTab
+                detail={detail}
+                className={selected}
+                onDetailRefresh={refreshSelectedDetail}
+              />
+            </div>
+            <div className={activeTab === 'roster' ? '' : 'hidden'}>
+              <RosterTab
+                detail={detail}
+                className={selected}
+                onDetailRefresh={refreshSelectedDetail}
+              />
+            </div>
+            <div className={activeTab === 'coverage' ? '' : 'hidden'}>
+              <CoverageTab
+                detail={detail}
+                className={selected}
+                onDetailRefresh={refreshSelectedDetail}
+              />
+            </div>
           </>
         )}
       </div>

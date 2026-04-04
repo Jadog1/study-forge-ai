@@ -110,8 +110,8 @@ function normalizeClassDetail(raw: unknown): ClassDetail {
   };
 }
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const resp = await fetch(`${API_BASE}${url}`);
+async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(`${API_BASE}${url}`, init);
   if (!resp.ok) throw new Error(await resp.text());
   return resp.json() as Promise<T>;
 }
@@ -275,7 +275,10 @@ export const api = {
   createClass: (name: string) => postJSON<void>('/classes', { name }),
 
   fetchClassDetail: (name: string) =>
-    fetchJSON<unknown>(`/classes/${encodeURIComponent(name)}`).then(normalizeClassDetail),
+    fetchJSON<unknown>(
+      `/classes/${encodeURIComponent(name)}?_=${Date.now()}`,
+      { cache: 'no-store' },
+    ).then(normalizeClassDetail),
 
   updateClassContext: (name: string, files: string[]) =>
     putJSON<void>(`/classes/${encodeURIComponent(name)}/context`, {

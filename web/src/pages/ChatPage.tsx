@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Loader2, MessageSquare, ChevronDown } from 'lucide-react';
+import { Send, Loader2, MessageSquare, ChevronDown, PlusCircle, AlertTriangle } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { streamChat, fetchClasses } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
@@ -123,27 +123,56 @@ export function ChatPage() {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   };
 
+  const handleNewChat = () => {
+    if (streaming) return;
+    setMessages([]);
+    setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.focus();
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Header bar */}
       <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 lg:px-6">
         <h1 className="text-lg font-semibold text-slate-900">Chat</h1>
-        {classes.length > 0 && (
-          <div className="relative ml-auto">
-            <select
-              value={selectedClass}
-              onChange={(e) => setSelectedClass(e.target.value)}
-              className="appearance-none rounded-lg border border-slate-200 bg-white py-1.5 pl-3 pr-8 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-            >
-              {classes.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          </div>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {classes.length > 0 && (
+            <div className="relative">
+              <select
+                value={selectedClass}
+                onChange={(e) => setSelectedClass(e.target.value)}
+                className="appearance-none rounded-lg border border-slate-200 bg-white py-1.5 pl-3 pr-8 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+              >
+                {classes.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            </div>
+          )}
+          <button
+            onClick={handleNewChat}
+            disabled={streaming || messages.length === 0}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <PlusCircle className="h-4 w-4" />
+            New chat
+          </button>
+        </div>
+      </div>
+
+      <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 lg:px-6">
+        <div className="mx-auto flex max-w-3xl items-start gap-2 text-xs text-amber-800">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p>
+            Chats are not saved yet. Starting a new chat or refreshing the page will clear your conversation history.
+          </p>
+        </div>
       </div>
 
       {/* Message area */}
