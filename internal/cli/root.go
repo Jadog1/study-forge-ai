@@ -2,16 +2,14 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/studyforge/study-agent/internal/config"
-	"github.com/studyforge/study-agent/internal/tui"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "sfa",
-	Short: "AI-powered study assistant",
+	Short: "Study Forge AI web server CLI",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if !shouldAutoInitialize(cmd) {
 			return nil
@@ -26,16 +24,11 @@ var rootCmd = &cobra.Command{
 		}
 		return nil
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return tui.Launch()
-	},
-	Long: `sfa ingests notes, generates quizzes, tracks performance,
-and uses AI to create adaptive study materials.
+	Long: `Study Forge AI web server CLI.
 
 Get started:
-  sfa
-  sfa class create linear-algebra
-  sfa ingest ./my-notes --class linear-algebra
+  sfa web
+  sfa web --dev
 `,
 }
 
@@ -71,8 +64,4 @@ func printInitStatus(result *config.InitResult, automatic bool) {
 		fmt.Printf("%s already exists\n", configPath)
 	}
 	fmt.Printf("App data ready at %s\n", rootPath)
-}
-
-func displayClassFile(name, fileName string) string {
-	return filepath.ToSlash(filepath.Join(config.DisplayRootDir(), "classes", name, fileName))
 }
