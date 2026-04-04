@@ -192,8 +192,8 @@ func runQuizCmd(class string, opts quiz.QuizOptions, orc *orchestrator.Orchestra
 		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
 		_, cacheErr := state.RegisterTrackedQuiz(class, path, sfqPath)
-		report, syncErr := tracking.SyncTrackedQuizSessions()
 		sfqErr := sfq.Track(sfqPath)
+		report, syncErr := tracking.SyncTrackedQuizSessions()
 		var sfqNote string
 		if cacheErr != nil {
 			sfqNote = fmt.Sprintf("\n  (could not register tracked quiz cache: %s)", cacheErr)

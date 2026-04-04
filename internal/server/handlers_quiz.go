@@ -26,11 +26,11 @@ type quizDocSummary struct {
 }
 
 type quizDashboard struct {
-	Sections   []state.Section        `json:"sections"`
-	Components []state.Component      `json:"components"`
+	Sections   []state.Section         `json:"sections"`
+	Components []state.Component       `json:"components"`
 	Tracked    *state.TrackedQuizCache `json:"tracked"`
-	Quizzes    []quizDocSummary       `json:"quizzes"`
-	LoadedAt   time.Time              `json:"loaded_at"`
+	Quizzes    []quizDocSummary        `json:"quizzes"`
+	LoadedAt   time.Time               `json:"loaded_at"`
 }
 
 func (s *Server) handleQuizDashboard(w http.ResponseWriter, r *http.Request) {
@@ -129,13 +129,13 @@ func loadQuizDocs() ([]quizDocSummary, error) {
 }
 
 type generateQuizRequest struct {
-	Class           string                     `json:"class"`
-	Count           int                        `json:"count"`
-	Type            string                     `json:"type"`
-	AssessmentType  string                     `json:"assessment_type"`
-	QuestionType    string                     `json:"question_type"`
-	FocusedSections []string                   `json:"focused_sections"`
-	Tags            []string                   `json:"tags"`
+	Class           string                       `json:"class"`
+	Count           int                          `json:"count"`
+	Type            string                       `json:"type"`
+	AssessmentType  string                       `json:"assessment_type"`
+	QuestionType    string                       `json:"question_type"`
+	FocusedSections []string                     `json:"focused_sections"`
+	Tags            []string                     `json:"tags"`
 	Directives      []quiz.OrchestratorDirective `json:"directives"`
 }
 
@@ -209,8 +209,8 @@ func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	_, _ = tracking.SyncTrackedQuizSessions()
 	_ = sfq.Track(sfqPath)
+	_, _ = tracking.SyncTrackedQuizSessions()
 
 	sseEvent(w, flush, map[string]any{
 		"type":           "done",

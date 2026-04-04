@@ -460,8 +460,8 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if _, cacheErr := state.RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
 			return fmt.Sprintf("Quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked cache warning: %v", path, quizID, q.Title, len(q.Sections), cacheErr), nil
 		}
-		report, syncErr := tracking.SyncTrackedQuizSessions()
 		sfqErr := sfq.Track(sfqPath)
+		report, syncErr := tracking.SyncTrackedQuizSessions()
 		syncSummary := ""
 		if syncErr != nil {
 			syncSummary = "\nSession sync warning: " + syncErr.Error()
@@ -507,8 +507,8 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if _, cacheErr := state.RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
 			return fmt.Sprintf("Adaptive quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked cache warning: %v", path, quizID, q.Title, len(q.Sections), cacheErr), nil
 		}
-		report, syncErr := tracking.SyncTrackedQuizSessions()
 		sfqErr := sfq.Track(sfqPath)
+		report, syncErr := tracking.SyncTrackedQuizSessions()
 		syncSummary := ""
 		if syncErr != nil {
 			syncSummary = "\nSession sync warning: " + syncErr.Error()

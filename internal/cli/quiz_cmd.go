@@ -94,8 +94,8 @@ var quizCmd = &cobra.Command{
 		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
 		_, cacheErr := state.RegisterTrackedQuiz(class, path, sfqPath)
-		report, syncErr := tracking.SyncTrackedQuizSessions()
 		sfqErr := sfq.Track(sfqPath)
+		report, syncErr := tracking.SyncTrackedQuizSessions()
 
 		fmt.Printf("✓ Quiz saved: %s\n", path)
 		fmt.Printf("  Quiz ID:    %s\n", quizID)
