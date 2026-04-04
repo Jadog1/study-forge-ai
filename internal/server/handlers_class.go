@@ -42,12 +42,12 @@ func (s *Server) handleCreateClass(w http.ResponseWriter, r *http.Request) {
 }
 
 type classDetail struct {
-	Name     string                  `json:"name"`
-	Syllabus *class.Syllabus         `json:"syllabus"`
-	Rules    *class.Rules            `json:"rules"`
-	Context  *class.Context          `json:"context"`
-	Profiles map[string]string       `json:"profiles"`
-	Roster   *class.NoteRoster       `json:"roster"`
+	Name     string                          `json:"name"`
+	Syllabus *class.Syllabus                 `json:"syllabus"`
+	Rules    *class.Rules                    `json:"rules"`
+	Context  *class.Context                  `json:"context"`
+	Profiles map[string]string               `json:"profiles"`
+	Roster   *class.NoteRoster               `json:"roster"`
 	Coverage map[string]*class.CoverageScope `json:"coverage"`
 }
 
@@ -56,6 +56,27 @@ func (s *Server) handleGetClass(w http.ResponseWriter, r *http.Request, classNam
 	rules, _ := class.LoadRules(className)
 	ctx, _ := class.LoadContext(className)
 	roster, _ := class.LoadNoteRoster(className)
+
+	if syllabus == nil {
+		syllabus = &class.Syllabus{Class: className, Topics: []class.Topic{}}
+	} else if syllabus.Topics == nil {
+		syllabus.Topics = []class.Topic{}
+	}
+	if rules == nil {
+		rules = &class.Rules{Class: className, QuestionStyles: []string{}}
+	} else if rules.QuestionStyles == nil {
+		rules.QuestionStyles = []string{}
+	}
+	if ctx == nil {
+		ctx = &class.Context{Class: className, ContextFiles: []string{}}
+	} else if ctx.ContextFiles == nil {
+		ctx.ContextFiles = []string{}
+	}
+	if roster == nil {
+		roster = &class.NoteRoster{Class: className, Entries: []class.NoteRosterEntry{}}
+	} else if roster.Entries == nil {
+		roster.Entries = []class.NoteRosterEntry{}
+	}
 
 	profiles := make(map[string]string)
 	for _, p := range class.ContextProfiles() {

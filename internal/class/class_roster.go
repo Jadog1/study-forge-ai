@@ -12,33 +12,33 @@ import (
 // NoteRosterEntry maps a user-visible label to source-matching hints and a
 // stable order so users can explicitly define course progression.
 type NoteRosterEntry struct {
-	Label         string   `yaml:"label"`
-	SourcePattern string   `yaml:"source_pattern,omitempty"`
-	Tags          []string `yaml:"tags,omitempty"`
-	Week          int      `yaml:"week,omitempty"`
-	Order         int      `yaml:"order,omitempty"`
+	Label         string   `json:"label" yaml:"label"`
+	SourcePattern string   `json:"source_pattern,omitempty" yaml:"source_pattern,omitempty"`
+	Tags          []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Week          int      `json:"week,omitempty" yaml:"week,omitempty"`
+	Order         int      `json:"order,omitempty" yaml:"order,omitempty"`
 }
 
 // NoteRoster stores class note ordering preferences.
 type NoteRoster struct {
-	Class   string            `yaml:"class"`
-	Entries []NoteRosterEntry `yaml:"entries"`
+	Class   string            `json:"class" yaml:"class"`
+	Entries []NoteRosterEntry `json:"entries" yaml:"entries"`
 }
 
 // ScopeGroup defines one weighted material bucket for an assessment scope.
 type ScopeGroup struct {
-	Labels         []string `yaml:"labels,omitempty"`
-	SourcePatterns []string `yaml:"source_patterns,omitempty"`
-	Tags           []string `yaml:"tags,omitempty"`
-	Weight         float64  `yaml:"weight"`
+	Labels         []string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	SourcePatterns []string `json:"source_patterns,omitempty" yaml:"source_patterns,omitempty"`
+	Tags           []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Weight         float64  `json:"weight" yaml:"weight"`
 }
 
 // CoverageScope configures weighted material selection for a profile kind.
 type CoverageScope struct {
-	Class            string       `yaml:"class"`
-	Kind             string       `yaml:"kind"`
-	ExcludeUnmatched bool         `yaml:"exclude_unmatched,omitempty"`
-	Groups           []ScopeGroup `yaml:"groups"`
+	Class            string       `json:"class" yaml:"class"`
+	Kind             string       `json:"kind" yaml:"kind"`
+	ExcludeUnmatched bool         `json:"exclude_unmatched,omitempty" yaml:"exclude_unmatched,omitempty"`
+	Groups           []ScopeGroup `json:"groups" yaml:"groups"`
 }
 
 const noteRosterFileName = "roster.yaml"

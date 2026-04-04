@@ -51,7 +51,7 @@ Run the Go API server and Vite dev server separately for hot-reload:
 
 ```bash
 # Terminal 1 — API server
-sfa web --dev
+go install ./cmd/sfa && sfa web --dev
 
 # Terminal 2 — Vite dev server with hot-reload
 cd web && npm run dev

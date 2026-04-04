@@ -14,31 +14,31 @@ import (
 
 // Syllabus lists the weekly/daily topics for a class.
 type Syllabus struct {
-	Class  string  `yaml:"class"`
-	Topics []Topic `yaml:"topics"`
+	Class  string  `json:"class" yaml:"class"`
+	Topics []Topic `json:"topics" yaml:"topics"`
 }
 
 // Topic is a single entry in the syllabus.
 type Topic struct {
-	Week        int      `yaml:"week,omitempty"`
-	Day         string   `yaml:"day,omitempty"`
-	Title       string   `yaml:"title"`
-	Description string   `yaml:"description,omitempty"`
-	Tags        []string `yaml:"tags,omitempty"`
+	Week        int      `json:"week,omitempty" yaml:"week,omitempty"`
+	Day         string   `json:"day,omitempty" yaml:"day,omitempty"`
+	Title       string   `json:"title" yaml:"title"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty" yaml:"tags,omitempty"`
 }
 
 // Rules captures exam expectations and question style preferences.
 type Rules struct {
-	Class          string   `yaml:"class"`
-	ExamExpect     string   `yaml:"exam_expectations,omitempty"`
-	QuestionStyles []string `yaml:"question_styles,omitempty"`
-	Notes          string   `yaml:"notes,omitempty"`
+	Class          string   `json:"class" yaml:"class"`
+	ExamExpect     string   `json:"exam_expectations,omitempty" yaml:"exam_expectations,omitempty"`
+	QuestionStyles []string `json:"question_styles,omitempty" yaml:"question_styles,omitempty"`
+	Notes          string   `json:"notes,omitempty" yaml:"notes,omitempty"`
 }
 
 // Context tracks external file paths used as class-level AI context.
 type Context struct {
-	Class        string   `yaml:"class"`
-	ContextFiles []string `yaml:"context_files"`
+	Class        string   `json:"class" yaml:"class"`
+	ContextFiles []string `json:"context_files" yaml:"context_files"`
 }
 
 // ContextProfile describes one assessment-specific class context profile.

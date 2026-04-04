@@ -11,6 +11,7 @@ import (
 
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/internal/orchestrator"
 	"github.com/studyforge/study-agent/internal/quiz"
 	"github.com/studyforge/study-agent/internal/search"
 	"github.com/studyforge/study-agent/internal/sfq"
@@ -438,7 +439,16 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if err != nil {
 			return "", err
 		}
-		opts := quiz.QuizOptions{Count: count, TypePreference: typePref, Tags: tags, Directives: directives}
+		opts := quiz.QuizOptions{
+			Count:          count,
+			TypePreference: typePref,
+			Tags:           tags,
+			Directives:     directives,
+			ProviderOverrides: &quiz.QuizProviderOverrides{
+				Orchestrator: orchestrator.BuildProviderForRole("quiz_orchestrator", cfg),
+				Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),
+			},
+		}
 		q, path, err := quiz.NewQuizStream(targetClass, opts, provider, cfg, func(progress quiz.ProgressEvent) {
 			_ = emitQuizProgressEvent(progress, onEvent)
 		})
@@ -478,7 +488,14 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		if typePref == "" {
 			typePref = "multiple-choice"
 		}
-		opts := quiz.QuizOptions{Count: count, TypePreference: typePref}
+		opts := quiz.QuizOptions{
+			Count:          count,
+			TypePreference: typePref,
+			ProviderOverrides: &quiz.QuizProviderOverrides{
+				Orchestrator: orchestrator.BuildProviderForRole("quiz_orchestrator", cfg),
+				Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),
+			},
+		}
 		q, path, err := quiz.NewQuizStream(targetClass, opts, provider, cfg, func(progress quiz.ProgressEvent) {
 			_ = emitQuizProgressEvent(progress, onEvent)
 		})

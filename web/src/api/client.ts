@@ -20,6 +20,96 @@ import type {
 
 const API_BASE = '/api';
 
+type RawStreamEvent = {
+  type?: string;
+  text?: string;
+  label?: string;
+  detail?: string;
+  error?: string;
+  done?: boolean | string;
+  message?: string;
+};
+
+function normalizeStreamEvent(raw: unknown): ChatStreamEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const e = raw as RawStreamEvent;
+  if (!e.type) return null;
+
+  if (
+    e.type === 'chunk' ||
+    e.type === 'action-start' ||
+    e.type === 'action-done' ||
+    e.type === 'done' ||
+    e.type === 'error'
+  ) {
+    return {
+      type: e.type,
+      text: e.text,
+      label: e.label,
+      detail: e.detail,
+      error: e.error,
+    };
+  }
+
+  if (e.type === 'progress') {
+    if (e.error) {
+      return { type: 'error', error: e.error, label: e.label, detail: e.detail };
+    }
+    const isDone = e.done === true || e.done === 'true';
+    return {
+      type: isDone ? 'action-done' : 'action-start',
+      label: e.label ?? e.detail ?? (isDone ? 'done' : 'working'),
+      detail: e.detail,
+    };
+  }
+
+  if (e.type === 'warning') {
+    return {
+      type: 'chunk',
+      text: `Warning: ${e.message ?? e.detail ?? e.label ?? 'unknown warning'}`,
+    };
+  }
+
+  return null;
+}
+
+function normalizeClassDetail(raw: unknown): ClassDetail {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const syllabus = (d.syllabus ?? {}) as Record<string, unknown>;
+  const rules = (d.rules ?? {}) as Record<string, unknown>;
+  const context = (d.context ?? {}) as Record<string, unknown>;
+  const roster = (d.roster ?? {}) as Record<string, unknown>;
+
+  return {
+    name: typeof d.name === 'string' ? d.name : '',
+    syllabus: {
+      class: typeof syllabus.class === 'string' ? syllabus.class : '',
+      topics: Array.isArray(syllabus.topics) ? (syllabus.topics as ClassDetail['syllabus']['topics']) : [],
+    },
+    rules: {
+      class: typeof rules.class === 'string' ? rules.class : '',
+      exam_expectations:
+        typeof rules.exam_expectations === 'string' ? rules.exam_expectations : undefined,
+      question_styles: Array.isArray(rules.question_styles) ? (rules.question_styles as string[]) : [],
+      notes: typeof rules.notes === 'string' ? rules.notes : undefined,
+    },
+    context: {
+      class: typeof context.class === 'string' ? context.class : '',
+      context_files: Array.isArray(context.context_files) ? (context.context_files as string[]) : [],
+    },
+    profiles:
+      d.profiles && typeof d.profiles === 'object' ? (d.profiles as Record<string, string>) : {},
+    roster: {
+      class: typeof roster.class === 'string' ? roster.class : '',
+      entries: Array.isArray(roster.entries) ? (roster.entries as ClassDetail['roster']['entries']) : [],
+    },
+    coverage:
+      d.coverage && typeof d.coverage === 'object'
+        ? (d.coverage as ClassDetail['coverage'])
+        : {},
+  };
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
   const resp = await fetch(`${API_BASE}${url}`);
   if (!resp.ok) throw new Error(await resp.text());
@@ -75,7 +165,9 @@ async function streamSSE(
     for (const line of lines) {
       if (line.startsWith('data: ')) {
         try {
-          onEvent(JSON.parse(line.slice(6)) as ChatStreamEvent);
+          const parsed = JSON.parse(line.slice(6));
+          const event = normalizeStreamEvent(parsed);
+          if (event) onEvent(event);
         } catch {
           // skip malformed events
         }
@@ -183,7 +275,7 @@ export const api = {
   createClass: (name: string) => postJSON<void>('/classes', { name }),
 
   fetchClassDetail: (name: string) =>
-    fetchJSON<ClassDetail>(`/classes/${encodeURIComponent(name)}`),
+    fetchJSON<unknown>(`/classes/${encodeURIComponent(name)}`).then(normalizeClassDetail),
 
   updateClassContext: (name: string, files: string[]) =>
     putJSON<void>(`/classes/${encodeURIComponent(name)}/context`, {

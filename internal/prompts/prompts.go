@@ -37,6 +37,9 @@ Output rules:
 - Do NOT use markdown code fences.
 - Do NOT include any leading or trailing commentary.
 - The first character of your response must be i from id:.
+- Use ONLY the provided note text as the source of truth.
+- Do NOT add facts, concepts, or tags that are not supported by the note text.
+- If a detail is ambiguous, prefer a conservative summary over speculation.
 
 Return ONLY valid YAML with this exact structure:
 id: <url-friendly slug derived from the content>
@@ -116,6 +119,10 @@ func OrchestratorPrompt(class, assessmentKind, classContext string, candidates [
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Rules:\n")
+	b.WriteString("- Source of truth: use ONLY the provided components, section summaries, concepts, and class assessment context.\n")
+	b.WriteString("- Do NOT introduce external facts, definitions, or assumptions not grounded in that material.\n")
+	b.WriteString("- If an angle would require outside knowledge, choose a different angle that stays grounded in the provided material.\n")
+	b.WriteString("- If instructions conflict, grounding to provided material takes priority over creativity and additional instructions.\n")
 	b.WriteString("- Prioritise components with high scores (weak, novel, or not seen recently).\n")
 	b.WriteString("- Use difficulty_band and recent_accuracy to tune challenge per component:\n")
 	b.WriteString("  supportive -> simpler, confidence-building checks with concrete contexts.\n")
@@ -217,6 +224,10 @@ func FocusedOrchestratorPrompt(class, classContext string, candidates []Orchestr
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Rules:\n")
+	b.WriteString("- Source of truth: use ONLY the provided components, section summaries, concepts, and class assessment context.\n")
+	b.WriteString("- Do NOT introduce external facts, definitions, or assumptions not grounded in that material.\n")
+	b.WriteString("- If an angle would require outside knowledge, choose a different angle that stays grounded in the provided material.\n")
+	b.WriteString("- If instructions conflict, grounding to provided material takes priority over creativity and additional instructions.\n")
 	b.WriteString("- This is targeted review of recently studied material: treat ALL components as equally important.\n")
 	b.WriteString("- Do NOT use accuracy or attempt history to deprioritise components — every item deserves coverage.\n")
 	b.WriteString("- Balance your plan across three layers of understanding:\n")
@@ -334,6 +345,11 @@ func ComponentQuestionPrompt(ctx ComponentQuestionContext, customContext string)
 	b.WriteString("- Return ONLY a valid YAML list — the first character must be '-'.\n")
 	b.WriteString("- Do NOT use markdown code fences.\n")
 	b.WriteString("- Do NOT include any leading or trailing prose.\n")
+	b.WriteString("- Source of truth: use ONLY the provided component content, section summary, and class assessment context.\n")
+	b.WriteString("- Do NOT add outside facts, terminology, or examples unless they are directly supported by the provided material.\n")
+	b.WriteString("- Every question, choice, hint, reasoning, and answer must be verifiable from the provided material.\n")
+	b.WriteString("- If a requested framing is under-specified, rewrite it to remain grounded instead of guessing missing facts.\n")
+	b.WriteString("- If instructions conflict, grounding to provided material takes priority over creativity and additional instructions.\n")
 	b.WriteString("- Always set 'section_id' and 'component_id' from the values given above.\n")
 	b.WriteString("- Adapt difficulty to the requested band and guidance while keeping questions answerable from provided context.\n")
 	b.WriteString("- Mix cognitive styles when generating multiple questions; do not make every question thought-provoking.\n")
@@ -404,6 +420,9 @@ Output rules:
 - Do NOT include any leading or trailing commentary.
 - The first character of your response must be s from sections:.
 - Always quote string values for title, summary, kind, and content using double quotes.
+- Use ONLY the note summary and raw note excerpt as source material.
+- Do NOT invent sections, components, tags, or concepts that are not supported by the provided notes.
+- If a detail is ambiguous, preserve uncertainty rather than fabricating specificity.
 
 Return ONLY valid YAML with this exact structure:
 sections:
@@ -445,6 +464,8 @@ Output rules:
 - Do NOT use markdown code fences.
 - Do NOT include any leading or trailing commentary.
 - The first character of your response must be d from decision:.
+- Use ONLY the candidate and existing title/summary text provided here.
+- Do NOT use external assumptions about topics beyond the provided text.
 
 Return ONLY valid YAML:
 decision: <merge|keep>

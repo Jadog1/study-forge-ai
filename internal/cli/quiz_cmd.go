@@ -65,6 +65,10 @@ var quizCmd = &cobra.Command{
 				Groups:           groups,
 			}
 		}
+		opts.ProviderOverrides = &quiz.QuizProviderOverrides{
+			Orchestrator: orchestrator.BuildProviderForRole("quiz_orchestrator", cfg),
+			Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),
+		}
 
 		fmt.Printf("Generating adaptive quiz for class %q...\n", class)
 		q, path, err := quiz.NewQuizStream(class, opts, orc.Provider, cfg, func(e quiz.ProgressEvent) {

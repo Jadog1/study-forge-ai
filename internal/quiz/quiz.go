@@ -213,6 +213,9 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		}
 	}
 
+	directives = expandCompoundDirectives(directives)
+	directives = normalizeDirectiveCount(directives, opts.Count)
+
 	// ── 3. Component agents ──────────────────────────────────────────────────
 	scoreByComponent := make(map[string]ComponentScore, len(candidates))
 	for _, cs := range candidates {

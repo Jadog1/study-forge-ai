@@ -211,6 +211,57 @@ func TestFinalizeExplicitDirectives_DefaultsMissingCountsWhenTotalAbsent(t *test
 	}
 }
 
+func TestExpandCompoundDirectives_SplitsComponentAndSectionIDs(t *testing.T) {
+	directives := expandCompoundDirectives([]OrchestratorDirective{
+		{
+			ComponentID:   "cmp-1, cmp-2,cmp-3",
+			SectionID:     "sec-1, sec-2, sec-3",
+			QuestionCount: 6,
+			QuestionTypes: []string{"multiple-choice"},
+			Angle:         "check understanding",
+		},
+	})
+
+	if len(directives) != 3 {
+		t.Fatalf("expected 3 directives, got %d", len(directives))
+	}
+	for i, wantID := range []string{"cmp-1", "cmp-2", "cmp-3"} {
+		if directives[i].ComponentID != wantID {
+			t.Fatalf("directive %d component_id mismatch: got %q want %q", i, directives[i].ComponentID, wantID)
+		}
+	}
+	for i, wantSection := range []string{"sec-1", "sec-2", "sec-3"} {
+		if directives[i].SectionID != wantSection {
+			t.Fatalf("directive %d section_id mismatch: got %q want %q", i, directives[i].SectionID, wantSection)
+		}
+	}
+	total := 0
+	for _, d := range directives {
+		total += d.QuestionCount
+	}
+	if total != 6 {
+		t.Fatalf("expected distributed count to sum to 6, got %d", total)
+	}
+}
+
+func TestNormalizeDirectiveCount_AfterCompoundExpansion_PreservesTarget(t *testing.T) {
+	directives := expandCompoundDirectives([]OrchestratorDirective{
+		{ComponentID: "cmp-a, cmp-b, cmp-c", QuestionCount: 2},
+	})
+	normalized := normalizeDirectiveCount(directives, 2)
+
+	if len(normalized) != 2 {
+		t.Fatalf("expected 2 directives after expansion, got %d", len(normalized))
+	}
+	total := 0
+	for _, d := range normalized {
+		total += d.QuestionCount
+	}
+	if total != 2 {
+		t.Fatalf("expected normalized total 2, got %d", total)
+	}
+}
+
 func TestRebalanceChoiceAnswerPositions_MovesCorrectFromFirst(t *testing.T) {
 	sections := []state.QuizSection{
 		{

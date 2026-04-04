@@ -44,7 +44,7 @@ func runComponentQuestionAgent(
 	const maxComponentSteps = 4
 	transcript := prompt
 	for step := 0; step < maxComponentSteps; step++ {
-		resp, err := provider.Generate(transcript)
+		resp, err := generateWithQuizUsage(provider, transcript, quizOperationComponent, score.Component.Class, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("component question agent: %w", err)
 		}

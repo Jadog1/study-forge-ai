@@ -44,6 +44,13 @@ interface QuizSelection {
   sourcePaths: Set<string>;
 }
 
+interface SourceItem {
+  path: string;
+  classes: string[];
+  sectionCount: number;
+  name: string;
+}
+
 const EMPTY_SELECTION: QuizSelection = {
   componentIds: new Set(),
   sourcePaths: new Set(),
@@ -51,6 +58,12 @@ const EMPTY_SELECTION: QuizSelection = {
 
 function selectionCount(sel: QuizSelection): number {
   return sel.componentIds.size + sel.sourcePaths.size;
+}
+
+function sourceFileName(path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  const last = normalized.split('/').pop();
+  return last && last.length > 0 ? last : path;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +79,7 @@ export function KnowledgePage() {
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedSourcePath, setSelectedSourcePath] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<LeftTab>('sections');
   const [selection, setSelection] = useState<QuizSelection>(EMPTY_SELECTION);
   const [showQuizPanel, setShowQuizPanel] = useState(false);
@@ -109,7 +123,7 @@ export function KnowledgePage() {
     });
   }, [sections, search, classFilter]);
 
-  const allSources = useMemo(() => {
+  const allSources = useMemo<SourceItem[]>(() => {
     const sourceMap = new Map<string, { classes: Set<string>; sectionCount: number }>();
     for (const s of sections) {
       if (classFilter && s.class !== classFilter) continue;
@@ -128,7 +142,7 @@ export function KnowledgePage() {
         path,
         classes: [...info.classes],
         sectionCount: info.sectionCount,
-        name: path.split('/').pop() ?? path,
+        name: sourceFileName(path),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [sections, classFilter]);
@@ -140,6 +154,27 @@ export function KnowledgePage() {
       (s) => s.name.toLowerCase().includes(query) || s.path.toLowerCase().includes(query),
     );
   }, [allSources, search]);
+
+  const selectedSource = useMemo(
+    () => allSources.find((s) => s.path === selectedSourcePath) ?? null,
+    [allSources, selectedSourcePath],
+  );
+
+  const selectedSourceSections = useMemo(
+    () =>
+      selectedSourcePath
+        ? sections.filter((s) => s.source_paths?.includes(selectedSourcePath))
+        : [],
+    [sections, selectedSourcePath],
+  );
+
+  const selectedSourceComponents = useMemo(
+    () =>
+      selectedSourcePath
+        ? components.filter((c) => c.source_paths?.includes(selectedSourcePath))
+        : [],
+    [components, selectedSourcePath],
+  );
 
   const selected = useMemo(
     () => sections.find((s) => s.id === selectedId) ?? null,
@@ -400,7 +435,9 @@ export function KnowledgePage() {
             ) : (
               <SourceList
                 sources={filteredSources}
+                activePath={selectedSourcePath}
                 selectedPaths={selection.sourcePaths}
+                onPreview={setSelectedSourcePath}
                 onToggle={toggleSource}
               />
             )}
@@ -409,7 +446,25 @@ export function KnowledgePage() {
 
         {/* Right panel */}
         <div className="flex-1 overflow-y-auto bg-slate-50 p-4 lg:p-6">
-          {!selected ? (
+          {leftTab === 'sources' ? (
+            selectedSource ? (
+              <SourceDetail
+                source={selectedSource}
+                sections={selectedSourceSections}
+                components={selectedSourceComponents}
+                isSelected={selection.sourcePaths.has(selectedSource.path)}
+                onToggleSource={toggleSource}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <EmptyState
+                  icon={FileText}
+                  title="Select a source"
+                  description="Choose a source from the list to preview the full file path and related notes."
+                />
+              </div>
+            )
+          ) : !selected ? (
             <div className="flex h-full items-center justify-center">
               <EmptyState
                 icon={BookOpen}
@@ -562,11 +617,15 @@ function SectionList({
 
 function SourceList({
   sources,
+  activePath,
   selectedPaths,
+  onPreview,
   onToggle,
 }: {
-  sources: { path: string; name: string; classes: string[]; sectionCount: number }[];
+  sources: SourceItem[];
+  activePath: string | null;
   selectedPaths: Set<string>;
+  onPreview: (path: string) => void;
   onToggle: (path: string) => void;
 }) {
   if (sources.length === 0) {
@@ -581,44 +640,141 @@ function SourceList({
     <ul className="divide-y divide-slate-100">
       {sources.map((source) => {
         const isSelected = selectedPaths.has(source.path);
+        const isActive = source.path === activePath;
         return (
           <li key={source.path}>
-            <button
-              onClick={() => onToggle(source.path)}
-              className={`w-full px-4 py-3 text-left transition-colors ${
-                isSelected
-                  ? 'bg-indigo-50'
-                  : 'hover:bg-slate-50'
+            <div
+              className={`flex items-start justify-between gap-3 px-4 py-3 transition-colors ${
+                isActive
+                  ? 'border-l-2 border-indigo-500 bg-indigo-50'
+                  : 'border-l-2 border-transparent hover:bg-slate-50'
               }`}
             >
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 shrink-0">
-                  {isSelected ? (
-                    <CheckSquare className="h-4 w-4 text-indigo-600" />
-                  ) : (
-                    <Square className="h-4 w-4 text-slate-300" />
+              <button
+                onClick={() => onPreview(source.path)}
+                className="min-w-0 flex-1 text-left"
+              >
+                <p className="text-sm font-medium text-slate-900 break-all">
+                  {source.name}
+                </p>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                  <span>{source.sectionCount} section{source.sectionCount !== 1 ? 's' : ''}</span>
+                  {source.classes.length > 0 && (
+                    <span>· {source.classes.join(', ')}</span>
                   )}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-slate-900 truncate">
-                    {source.name}
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-500 truncate font-mono">
-                    {source.path}
-                  </p>
-                  <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
-                    <span>{source.sectionCount} section{source.sectionCount !== 1 ? 's' : ''}</span>
-                    {source.classes.length > 0 && (
-                      <span>· {source.classes.join(', ')}</span>
-                    )}
-                  </div>
-                </div>
+              </button>
+              <button
+                onClick={() => onToggle(source.path)}
+                className="mt-0.5 shrink-0"
+                aria-label={isSelected ? 'Deselect source' : 'Select source'}
+              >
+                {isSelected ? (
+                  <CheckSquare className="h-4 w-4 text-indigo-600" />
+                ) : (
+                  <Square className="h-4 w-4 text-slate-300" />
+                )}
+              </button>
               </div>
-            </button>
           </li>
         );
       })}
     </ul>
+  );
+}
+
+function SourceDetail({
+  source,
+  sections,
+  components,
+  isSelected,
+  onToggleSource,
+}: {
+  source: SourceItem;
+  sections: Section[];
+  components: Component[];
+  isSelected: boolean;
+  onToggleSource: (path: string) => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-slate-900 break-all">{source.name}</h2>
+          <p className="mt-1 text-sm font-mono text-slate-500 break-all">{source.path}</p>
+        </div>
+        <button
+          onClick={() => onToggleSource(source.path)}
+          className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+            isSelected
+              ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          {isSelected ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
+          {isSelected ? 'Selected' : 'Select for quiz'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Card className="text-center">
+          <p className="text-2xl font-bold text-indigo-600">{sections.length}</p>
+          <p className="text-xs text-slate-500">Sections</p>
+        </Card>
+        <Card className="text-center">
+          <p className="text-2xl font-bold text-emerald-600">{components.length}</p>
+          <p className="text-xs text-slate-500">Components</p>
+        </Card>
+        <Card className="text-center">
+          <p className="text-2xl font-bold text-slate-700">{source.classes.length}</p>
+          <p className="text-xs text-slate-500">Classes</p>
+        </Card>
+      </div>
+
+      {sections.length > 0 && (
+        <Card
+          header={<h3 className="text-sm font-semibold text-slate-700">Related Sections</h3>}
+        >
+          <div className="space-y-2">
+            {sections.map((s) => (
+              <div key={s.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <p className="text-sm font-medium text-slate-900">{s.title}</p>
+                <p className="mt-0.5 text-xs text-slate-500">{s.class}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {components.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">Notes Preview</h3>
+          <div className="space-y-3">
+            {components.map((comp) => (
+              <Card key={comp.id}>
+                <div className="mb-2 flex items-center gap-2">
+                  <Badge color="blue">{comp.kind}</Badge>
+                  {comp.tags?.map((tag) => (
+                    <Badge key={tag} color="slate">
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
+                <p className="whitespace-pre-wrap break-words text-sm text-slate-700">{comp.content}</p>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sections.length === 0 && components.length === 0 && (
+        <EmptyState
+          icon={FileText}
+          title="No preview content"
+          description="No sections or components are currently linked to this source path."
+        />
+      )}
+    </div>
   );
 }
 
@@ -952,6 +1108,7 @@ function QuizGenerationPanel({
   const [events, setEvents] = useState<ChatStreamEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [completed, setCompleted] = useState(false);
 
   useEffect(() => {
     api.fetchQuestionTypes().then(setQuestionTypes).catch(() => {});
@@ -968,10 +1125,18 @@ function QuizGenerationPanel({
   const buildDirectives = useCallback((): OrchestratorDirective[] => {
     if (resolvedComponents.length === 0) return [];
 
-    const perComponent = Math.max(1, Math.floor(numQuestions / resolvedComponents.length));
-    let remainder = numQuestions - perComponent * resolvedComponents.length;
+    // If requested count is smaller than selected components, only keep enough
+    // components so the distributed total can never exceed numQuestions.
+    const targetComponents = resolvedComponents.slice(
+      0,
+      Math.min(resolvedComponents.length, Math.max(numQuestions, 0)),
+    );
+    if (targetComponents.length === 0) return [];
 
-    return resolvedComponents.map((comp) => {
+    const perComponent = Math.floor(numQuestions / targetComponents.length);
+    let remainder = numQuestions - perComponent * targetComponents.length;
+
+    return targetComponents.map((comp) => {
       const count = perComponent + (remainder > 0 ? 1 : 0);
       if (remainder > 0) remainder--;
 
@@ -992,6 +1157,7 @@ function QuizGenerationPanel({
 
   const handleGenerate = async () => {
     setGenerating(true);
+    setCompleted(false);
     setEvents([]);
     setError(null);
     try {
@@ -1006,8 +1172,9 @@ function QuizGenerationPanel({
         },
         (e) => setEvents((prev) => [...prev, e]),
       );
-      onDone();
+      setCompleted(true);
     } catch (err) {
+      setCompleted(false);
       setError(err instanceof Error ? err.message : 'Quiz generation failed');
     } finally {
       setGenerating(false);
@@ -1159,8 +1326,11 @@ function QuizGenerationPanel({
         )}
 
         {/* Progress events */}
-        {events.length > 0 && (
+        {(events.length > 0 || generating) && (
           <div className="mb-3 max-h-32 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs font-mono text-slate-600">
+            {events.length === 0 && generating && (
+              <div className="py-0.5 text-indigo-600">▸ Starting quiz generation...</div>
+            )}
             {events.map((e, i) => (
               <div key={i} className="py-0.5">
                 {e.type === 'action-start' && (
@@ -1183,8 +1353,22 @@ function QuizGenerationPanel({
 
         {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
 
-        {/* Clear link */}
-        <div className="flex justify-end">
+        {completed && !generating && !error && (
+          <p className="mb-2 text-sm text-emerald-700">
+            Quiz generation completed. Review the progress log, then click Done.
+          </p>
+        )}
+
+        {/* Actions */}
+        <div className="flex justify-end gap-3">
+          {completed && !generating && !error && (
+            <button
+              onClick={onDone}
+              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
+            >
+              Done
+            </button>
+          )}
           <button
             onClick={onClear}
             className="text-xs text-slate-400 hover:text-slate-600 transition-colors"

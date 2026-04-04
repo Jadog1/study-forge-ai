@@ -328,8 +328,11 @@ function GenerateQuizModal({
           </div>
 
           {/* Progress */}
-          {events.length > 0 && (
+          {(events.length > 0 || generating) && (
             <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs font-mono text-slate-600">
+              {events.length === 0 && generating && (
+                <div className="py-0.5 text-indigo-600">▸ Starting quiz generation...</div>
+              )}
               {events.map((e, i) => (
                 <div key={i} className="py-0.5">
                   {e.type === 'action-start' && (

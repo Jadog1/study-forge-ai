@@ -72,7 +72,7 @@ func runOrchestratorAgent(
 	const maxSteps = 4
 	transcript := prompt
 	for step := 0; step < maxSteps; step++ {
-		resp, err := provider.Generate(transcript)
+		resp, err := generateWithQuizUsage(provider, transcript, quizOperationOrchestrator, class, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("orchestrator agent: %w", err)
 		}
@@ -142,7 +142,7 @@ func runFocusedOrchestratorAgent(
 	const maxSteps = 4
 	transcript := prompt
 	for step := 0; step < maxSteps; step++ {
-		resp, err := provider.Generate(transcript)
+		resp, err := generateWithQuizUsage(provider, transcript, quizOperationOrchestrator, class, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("focused orchestrator agent: %w", err)
 		}
@@ -246,6 +246,94 @@ func normalizeDirectiveCount(directives []OrchestratorDirective, target int) []O
 			out[i].QuestionCount = count
 		}
 		assigned += out[i].QuestionCount
+	}
+	return out
+}
+
+// expandCompoundDirectives splits directives where component_id is provided as
+// a comma-separated list, a pattern some providers occasionally return.
+// Question counts are distributed across expanded directives, then callers can
+// re-normalize totals with normalizeDirectiveCount.
+func expandCompoundDirectives(directives []OrchestratorDirective) []OrchestratorDirective {
+	out := make([]OrchestratorDirective, 0, len(directives))
+	for _, d := range directives {
+		componentIDs := splitDirectiveList(d.ComponentID)
+		if len(componentIDs) <= 1 {
+			d.ComponentID = strings.TrimSpace(d.ComponentID)
+			d.SectionID = strings.TrimSpace(d.SectionID)
+			out = append(out, d)
+			continue
+		}
+
+		sectionIDs := splitDirectiveList(d.SectionID)
+		limit := len(componentIDs)
+		if d.QuestionCount > 0 && d.QuestionCount < limit {
+			limit = d.QuestionCount
+		}
+		expandedIDs := componentIDs[:limit]
+		counts := distributeDirectiveCount(d.QuestionCount, len(expandedIDs))
+		for i, componentID := range expandedIDs {
+			expanded := d
+			expanded.ComponentID = componentID
+			if len(counts) == len(expandedIDs) {
+				expanded.QuestionCount = counts[i]
+			}
+			switch {
+			case len(sectionIDs) == len(componentIDs):
+				expanded.SectionID = sectionIDs[i]
+			case len(sectionIDs) == 1:
+				expanded.SectionID = sectionIDs[0]
+			default:
+				expanded.SectionID = strings.TrimSpace(expanded.SectionID)
+			}
+			out = append(out, expanded)
+		}
+	}
+	return out
+}
+
+func splitDirectiveList(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	})
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed != "" {
+			return []string{trimmed}
+		}
+	}
+	return out
+}
+
+func distributeDirectiveCount(total, parts int) []int {
+	if parts <= 0 {
+		return nil
+	}
+	out := make([]int, parts)
+	if total <= 0 {
+		for i := range out {
+			out[i] = 1
+		}
+		return out
+	}
+	base := total / parts
+	rem := total % parts
+	for i := range out {
+		out[i] = base
+		if rem > 0 {
+			out[i]++
+			rem--
+		}
+		if out[i] < 1 {
+			out[i] = 1
+		}
 	}
 	return out
 }
