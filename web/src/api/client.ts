@@ -16,6 +16,7 @@ import type {
   UsageEvent,
   UsageFilter,
   UsageTotals,
+  ChatMode,
 } from '../types';
 
 const API_BASE = '/api';
@@ -189,9 +190,10 @@ export function updateConfig(config: Partial<Config>): Promise<void> {
 export function streamChat(
   message: string,
   className: string,
+  mode: ChatMode,
   onEvent: (event: ChatStreamEvent) => void,
 ): Promise<void> {
-  return streamSSE('/chat', { message, class: className }, onEvent);
+  return streamSSE('/chat', { message, class: className, mode }, onEvent);
 }
 
 export function fetchSections(): Promise<Section[]> {

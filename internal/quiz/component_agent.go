@@ -7,6 +7,7 @@ import (
 
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/prompts"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/state"
 	"github.com/studyforge/study-agent/plugins"
 	"gopkg.in/yaml.v3"
@@ -28,6 +29,7 @@ func runComponentQuestionAgent(
 	score ComponentScore,
 	provider plugins.AIProvider,
 	cfg *config.Config,
+	usageRepo repository.UsageRepository,
 	onProgress func(ProgressEvent),
 ) ([]state.QuizSection, error) {
 	ctx := buildComponentQuestionContext(assessmentKind, classContext, dir, score)
@@ -44,7 +46,7 @@ func runComponentQuestionAgent(
 	const maxComponentSteps = 4
 	transcript := prompt
 	for step := 0; step < maxComponentSteps; step++ {
-		resp, err := generateWithQuizUsage(provider, transcript, quizOperationComponent, score.Component.Class, cfg)
+		resp, err := generateWithQuizUsage(provider, transcript, quizOperationComponent, score.Component.Class, cfg, usageRepo)
 		if err != nil {
 			return nil, fmt.Errorf("component question agent: %w", err)
 		}

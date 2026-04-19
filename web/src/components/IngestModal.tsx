@@ -217,7 +217,7 @@ export function IngestModal({ open, onClose, onDone }: IngestModalProps) {
           {/* Class */}
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">
-              Class <span className="text-slate-400 font-normal">(optional)</span>
+              Class
             </label>
             {classes.length > 0 ? (
               <select
@@ -225,7 +225,7 @@ export function IngestModal({ open, onClose, onDone }: IngestModalProps) {
                 onChange={(e) => setClassName(e.target.value)}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               >
-                <option value="">Auto-detect</option>
+                <option value="">Select a class...</option>
                 {classes.map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
@@ -235,7 +235,7 @@ export function IngestModal({ open, onClose, onDone }: IngestModalProps) {
                 type="text"
                 value={className}
                 onChange={(e) => setClassName(e.target.value)}
-                placeholder="class name (optional)"
+                placeholder="Enter class name"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
             )}
@@ -267,7 +267,7 @@ export function IngestModal({ open, onClose, onDone }: IngestModalProps) {
           {/* Start button */}
           <button
             onClick={handleIngest}
-            disabled={!canStart}
+            disabled={!canStart || !className.trim()}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
           >
             <Upload className="h-4 w-4" />

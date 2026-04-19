@@ -8,8 +8,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/studyforge/study-agent/internal/chat"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/orchestrator"
+	"github.com/studyforge/study-agent/internal/quiz"
+	"github.com/studyforge/study-agent/internal/repository"
+	"github.com/studyforge/study-agent/internal/tracking"
 )
 
 // Server holds the dependencies and exposes the HTTP API powering the web UI.
@@ -17,6 +21,10 @@ type Server struct {
 	mu       sync.RWMutex
 	cfg      *config.Config
 	orch     *orchestrator.Orchestrator
+	store    repository.Store
+	chatSvc  *chat.Service
+	quizSvc  *quiz.Service
+	syncSvc  *tracking.SyncService
 	port     int
 	staticFS http.FileSystem
 }
@@ -28,14 +36,43 @@ func New(cfg *config.Config, orch *orchestrator.Orchestrator, port int, staticDi
 		port = 8080
 	}
 	s := &Server{
-		cfg:  cfg,
-		orch: orch,
-		port: port,
+		cfg:   cfg,
+		orch:  orch,
+		store: repository.NewFilesystemStore(),
+		port:  port,
 	}
+	s.chatSvc = chat.NewService(s.store)
+	s.quizSvc = quiz.NewService(s.store)
+	s.syncSvc = tracking.NewSyncService(s.store)
 	if staticDir != "" {
 		s.staticFS = http.Dir(staticDir)
 	}
 	return s
+}
+
+func (s *Server) ChatService() *chat.Service {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.chatSvc
+}
+
+func (s *Server) QuizService() *quiz.Service {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.quizSvc
+}
+
+func (s *Server) SyncService() *tracking.SyncService {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.syncSvc
+}
+
+// Store returns the server's storage abstraction.
+func (s *Server) Store() repository.Store {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.store
 }
 
 // ListenAndServe starts the HTTP server. It blocks until the server shuts down.

@@ -5,7 +5,6 @@ import (
 
 	"github.com/studyforge/study-agent/internal/ingestion"
 	"github.com/studyforge/study-agent/internal/orchestrator"
-	"github.com/studyforge/study-agent/internal/state"
 )
 
 type ingestRequest struct {
@@ -30,9 +29,13 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "path or files is required")
 		return
 	}
+	if req.Class == "" {
+		jsonError(w, http.StatusBadRequest, "class is required")
+		return
+	}
 
 	if req.Clean {
-		if err := state.ClearIngestedData(); err != nil {
+		if err := s.Store().Maintenance().ClearIngestedData(); err != nil {
 			jsonError(w, http.StatusInternalServerError, "clear data: "+err.Error())
 			return
 		}
@@ -62,14 +65,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	var result ingestion.KnowledgeIngestResult
 	var err error
+	store := s.Store()
 
 	if len(req.Files) > 0 {
-		result, err = ingestion.IngestKnowledgeFilesStream(
-			req.Files, req.Class, provider, orch.EmbeddingProvider, cfg, onProgress,
+		result, err = ingestion.IngestKnowledgeFilesWithStore(
+			req.Files, req.Class, provider, orch.EmbeddingProvider, cfg, store, onProgress,
 		)
 	} else {
-		result, err = ingestion.IngestKnowledgeFolderStream(
-			req.Path, req.Class, provider, orch.EmbeddingProvider, cfg, onProgress,
+		result, err = ingestion.IngestKnowledgeFolderWithStore(
+			req.Path, req.Class, provider, orch.EmbeddingProvider, cfg, store, onProgress,
 		)
 	}
 
@@ -78,12 +82,12 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	notesIdx, loadErr := state.LoadNotesIndex()
+	notesIdx, loadErr := s.Store().Notes().LoadNotesIndex()
 	if loadErr == nil {
 		for _, note := range result.Notes {
 			notesIdx.AddOrUpdate(note)
 		}
-		_ = state.SaveNotesIndex(notesIdx)
+		_ = s.Store().Notes().SaveNotesIndex(notesIdx)
 	}
 
 	sseEvent(w, flush, map[string]any{

@@ -12,7 +12,9 @@ import (
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/orchestrator"
+	promptpkg "github.com/studyforge/study-agent/internal/prompts"
 	"github.com/studyforge/study-agent/internal/quiz"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/search"
 	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
@@ -24,20 +26,34 @@ const toolCallStartTag = "<tool_call>"
 
 // Ask sends a prompt to the model with optional class context files included.
 func Ask(provider plugins.AIProvider, cfg *config.Config, className, prompt string) (string, error) {
-	fullPrompt, err := buildPrompt(cfg, className, prompt)
+	return NewService(nil).Ask(provider, cfg, className, prompt)
+}
+
+// AskWithStore is like Ask but uses the provided storage abstraction.
+func AskWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, store repository.Store) (string, error) {
+	return NewService(store).Ask(provider, cfg, className, prompt)
+}
+
+// AskWithStoreAndMode is like AskWithStore but uses a mode override.
+func AskWithStoreAndMode(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store) (string, error) {
+	return NewService(store).AskWithMode(provider, cfg, className, prompt, mode)
+}
+
+func askWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store) (string, error) {
+	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store)
 	if err != nil {
 		return "", err
 	}
 
-	resp, err := runAgent(provider, cfg, className, fullPrompt, nil)
+	resp, err := runAgent(provider, cfg, className, fullPrompt, store, nil)
 	if err != nil {
 		return "", err
 	}
 	return resp, nil
 }
 
-func buildPrompt(cfg *config.Config, className, prompt string) (string, error) {
-	sections := []string{agentInstructions(className)}
+func buildPromptWithStore(cfg *config.Config, className, prompt string, mode Mode, store repository.Store) (string, error) {
+	sections := []string{agentInstructions(mode, className)}
 	if className != "" {
 		sections = append(sections, "Selected class:\n"+className)
 		ctxText, err := buildClassContext(className)
@@ -49,7 +65,7 @@ func buildPrompt(cfg *config.Config, className, prompt string) (string, error) {
 		}
 	}
 
-	noteText, err := buildNoteContext(className, prompt)
+	noteText, err := buildNoteContext(className, prompt, store)
 	if err != nil {
 		return "", err
 	}
@@ -95,8 +111,8 @@ func buildClassContext(className string) (string, error) {
 	return b.String(), nil
 }
 
-func buildNoteContext(className, prompt string) (string, error) {
-	knowledgeResults, knowledgeErr := search.ByKnowledgeQuery(prompt, className, 6)
+func buildNoteContext(className, prompt string, store repository.Store) (string, error) {
+	knowledgeResults, knowledgeErr := search.ByKnowledgeQueryWithStore(prompt, className, 6, store)
 	if knowledgeErr == nil && len(knowledgeResults) > 0 {
 		var b strings.Builder
 		for i, result := range knowledgeResults {
@@ -127,7 +143,7 @@ func buildNoteContext(className, prompt string) (string, error) {
 		return strings.TrimSpace(b.String()), nil
 	}
 
-	results, err := search.ByQuery(prompt, className, 4)
+	results, err := search.ByQueryWithStore(prompt, className, 4, store)
 	if err != nil {
 		return "", err
 	}
@@ -152,14 +168,14 @@ func buildNoteContext(className, prompt string) (string, error) {
 
 const availableTools = `Available tools:
 - search_notes: search ingested notes by natural-language query. Arguments: query (string), optional class (string), optional limit (int).
-- search_knowledge: search AI-processed knowledge sections and components by natural-language query. Returns richer extracted knowledge than search_notes. Arguments: query (string), optional class (string), optional kind ("section" or "component", leave empty for both), optional limit (int).
+- search_knowledge: search AI-processed knowledge sections and components. Arguments: optional query (string), optional class (string), optional kind ("section" or "component", leave empty for both), optional source (string; loose source/file match like "week 10"), optional section_id (string), optional component_id (string), optional limit (int).
 - get_class_context: fetch the registered class context files for a class. Arguments: optional class (string).
 - sfq_schema: fetch the quiz YAML schema for strict formatting guidance when generating quizzes. No arguments.
 - generate_quiz: generate and save a new quiz for a class from its ingested notes. Arguments: class (string), optional count (int), optional type (string), optional tags (array of strings), optional directives (array of objects with component_id, optional section_id, optional section_title, optional question_count, optional question_types, optional angle). Use directives when you already chose the exact component(s) and want to bypass the quiz orchestrator.
 - list_classes: list all registered classes. No arguments.
 - list_tools: show this list of available tools and their descriptions. No arguments.`
 
-func agentInstructions(className string) string {
+func agentInstructions(mode Mode, className string) string {
 	base := `You are Study Forge AI, a study assistant with access to note-search, class-context, and quiz tools.
 Use any provided class context and relevant ingested note summaries if the user asks questions about classes.
 If you need more note context, do not claim you cannot search notes. Use a tool.
@@ -167,7 +183,12 @@ If the user asks you to generate a quiz, use the generate_quiz or adapt_quiz too
 Preserve explicit user constraints when calling quiz tools. If the user asks for a specific number of questions, a demo quiz, a simple quiz, or a narrow topic, pass those constraints explicitly.
 For narrowly scoped quiz requests, prefer using search_knowledge first and then call generate_quiz with explicit directives so you control the plan instead of delegating selection to the orchestrator.
 
+When a user asks for specific sections/components or source files (for example, "week 10"), prefer search_knowledge with section_id/component_id/source filters before broad query search.
+
 ` + availableTools + `
+
+Mode-specific guidance:
+` + modeInstructions(mode) + `
 
 When you want a tool, respond with ONLY this XML block and nothing else:
 <tool_call>
@@ -182,15 +203,27 @@ Keep answers grounded in the available notes and class context.`
 	return base + "\nThe currently selected class is: " + className
 }
 
-func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt string, onEvent func(StreamEvent) error) (string, error) {
+func modeInstructions(mode Mode) string {
+	switch NormalizeMode(string(mode)) {
+	case ModeSocratic:
+		return promptpkg.SocraticTutorInstructions()
+	case ModeExplainBack:
+		return promptpkg.ExplainBackCoachInstructions()
+	default:
+		return promptpkg.StandardChatInstructions()
+	}
+}
+
+func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt string, store repository.Store, onEvent func(StreamEvent) error) (string, error) {
 	transcript := prompt
+	usageRepo := store.Usage()
 	for step := 0; step < 4; step++ {
 		resp, streamed, usage, err := generateAgentResponse(provider, transcript, onEvent)
 		if err != nil {
 			return "", fmt.Errorf("chat generate: %w", err)
 		}
 		if usage.Metadata.Provider != "" {
-			_ = state.AppendUsageEvent(state.UsageEvent{
+			_ = usageRepo.AppendUsageEvent(state.UsageEvent{
 				Operation:    "chat",
 				Provider:     usage.Metadata.Provider,
 				Model:        usage.Metadata.Model,
@@ -226,7 +259,7 @@ func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt
 			}
 		}
 
-		result, toolErr := executeToolCall(provider, cfg, className, call, onEvent)
+		result, toolErr := executeToolCall(provider, cfg, className, call, store, onEvent)
 		if toolErr != nil {
 			result = "Tool error: " + toolErr.Error()
 		}
@@ -277,6 +310,9 @@ func describeToolCall(className string, call *toolCall) string {
 			targetClass = className
 		}
 		kind := toolString(call.Arguments, "kind")
+		source := toolString(call.Arguments, "source")
+		sectionID := toolString(call.Arguments, "section_id")
+		componentID := toolString(call.Arguments, "component_id")
 		var suffix string
 		switch kind {
 		case "section":
@@ -284,10 +320,31 @@ func describeToolCall(className string, call *toolCall) string {
 		case "component":
 			suffix = " (components)"
 		}
-		if targetClass != "" {
-			return fmt.Sprintf("Searching knowledge%s for %q in %s", suffix, query, targetClass)
+		constraints := make([]string, 0, 3)
+		if componentID != "" {
+			constraints = append(constraints, "component="+componentID)
 		}
-		return fmt.Sprintf("Searching knowledge%s for %q", suffix, query)
+		if sectionID != "" {
+			constraints = append(constraints, "section="+sectionID)
+		}
+		if source != "" {
+			constraints = append(constraints, "source="+source)
+		}
+		constraintSuffix := ""
+		if len(constraints) > 0 {
+			constraintSuffix = " [" + strings.Join(constraints, "; ") + "]"
+		}
+		displayQuery := query
+		if displayQuery == "" && source != "" {
+			displayQuery = source
+		}
+		if displayQuery == "" {
+			displayQuery = "knowledge"
+		}
+		if targetClass != "" {
+			return fmt.Sprintf("Searching knowledge%s for %q in %s%s", suffix, displayQuery, targetClass, constraintSuffix)
+		}
+		return fmt.Sprintf("Searching knowledge%s for %q%s", suffix, displayQuery, constraintSuffix)
 	case "get_class_context":
 		targetClass := toolString(call.Arguments, "class")
 		if targetClass == "" {
@@ -376,7 +433,7 @@ func extractToolCall(resp string) (*toolCall, bool, error) {
 	return &call, true, nil
 }
 
-func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className string, call *toolCall, onEvent func(StreamEvent) error) (string, error) {
+func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className string, call *toolCall, store repository.Store, onEvent func(StreamEvent) error) (string, error) {
 	switch call.Name {
 	case "search_notes":
 		query := toolString(call.Arguments, "query")
@@ -385,7 +442,7 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			targetClass = className
 		}
 		limit := toolInt(call.Arguments, "limit", 5)
-		results, err := search.ByQuery(query, targetClass, limit)
+		results, err := search.ByQueryWithStore(query, targetClass, limit, store)
 		if err != nil {
 			return "", err
 		}
@@ -397,12 +454,15 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 			targetClass = className
 		}
 		kind := toolString(call.Arguments, "kind")
+		source := toolString(call.Arguments, "source")
+		sectionID := toolString(call.Arguments, "section_id")
+		componentID := toolString(call.Arguments, "component_id")
 		limit := toolInt(call.Arguments, "limit", 8)
-		results, err := search.ByKnowledgeQuery(query, targetClass, limit)
+		results, err := searchKnowledgeToolResults(query, targetClass, kind, source, sectionID, componentID, limit, store)
 		if err != nil {
 			return "", err
 		}
-		return formatKnowledgeResults(query, targetClass, kind, results), nil
+		return formatKnowledgeResults(query, targetClass, kind, source, sectionID, componentID, results), nil
 	case "get_class_context":
 		targetClass := toolString(call.Arguments, "class")
 		if targetClass == "" {
@@ -449,7 +509,7 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 				Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),
 			},
 		}
-		q, path, err := quiz.NewQuizStream(targetClass, opts, provider, cfg, func(progress quiz.ProgressEvent) {
+		q, path, err := quiz.NewQuizStreamWithStore(targetClass, opts, provider, cfg, store, func(progress quiz.ProgressEvent) {
 			_ = emitQuizProgressEvent(progress, onEvent)
 		})
 		if err != nil {
@@ -457,11 +517,11 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		}
 		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
-		if _, cacheErr := state.RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
+		if _, cacheErr := store.QuizAttempts().RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
 			return fmt.Sprintf("Quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked cache warning: %v", path, quizID, q.Title, len(q.Sections), cacheErr), nil
 		}
 		sfqErr := sfq.Track(sfqPath)
-		report, syncErr := tracking.SyncTrackedQuizSessions()
+		report, syncErr := tracking.NewSyncService(store).SyncTrackedQuizSessions()
 		syncSummary := ""
 		if syncErr != nil {
 			syncSummary = "\nSession sync warning: " + syncErr.Error()
@@ -496,7 +556,7 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 				Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),
 			},
 		}
-		q, path, err := quiz.NewQuizStream(targetClass, opts, provider, cfg, func(progress quiz.ProgressEvent) {
+		q, path, err := quiz.NewQuizStreamWithStore(targetClass, opts, provider, cfg, store, func(progress quiz.ProgressEvent) {
 			_ = emitQuizProgressEvent(progress, onEvent)
 		})
 		if err != nil {
@@ -504,11 +564,11 @@ func executeToolCall(provider plugins.AIProvider, cfg *config.Config, className 
 		}
 		quizID := strings.TrimSuffix(filepath.Base(path), ".yaml")
 		sfqPath := strings.TrimSuffix(path, ".yaml") + ".sfq"
-		if _, cacheErr := state.RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
+		if _, cacheErr := store.QuizAttempts().RegisterTrackedQuiz(targetClass, path, sfqPath); cacheErr != nil {
 			return fmt.Sprintf("Adaptive quiz generated and saved to %s\nQuiz ID: %s\nTitle: %s\nQuestions: %d\nTracked cache warning: %v", path, quizID, q.Title, len(q.Sections), cacheErr), nil
 		}
 		sfqErr := sfq.Track(sfqPath)
-		report, syncErr := tracking.SyncTrackedQuizSessions()
+		report, syncErr := tracking.NewSyncService(store).SyncTrackedQuizSessions()
 		syncSummary := ""
 		if syncErr != nil {
 			syncSummary = "\nSession sync warning: " + syncErr.Error()
@@ -554,7 +614,20 @@ func emitQuizProgressEvent(progress quiz.ProgressEvent, onEvent func(StreamEvent
 	})
 }
 
-func formatKnowledgeResults(query, className, kind string, results []search.KnowledgeResult) string {
+func searchKnowledgeToolResults(query, className, kind, source, sectionID, componentID string, limit int, store repository.Store) ([]search.KnowledgeResult, error) {
+	if componentID != "" {
+		return search.ByComponentIDWithStore(componentID, className, store)
+	}
+	if sectionID != "" {
+		return search.BySectionIDWithStore(sectionID, className, limit, store)
+	}
+	if source != "" {
+		return search.BySourcePathLooseWithStore(source, className, kind, limit, store)
+	}
+	return search.ByKnowledgeQueryWithStore(query, className, limit, store)
+}
+
+func formatKnowledgeResults(query, className, kind, source, sectionID, componentID string, results []search.KnowledgeResult) string {
 	if kind == "section" || kind == "component" {
 		filtered := results[:0]
 		for _, r := range results {
@@ -566,17 +639,51 @@ func formatKnowledgeResults(query, className, kind string, results []search.Know
 	}
 
 	if len(results) == 0 {
-		if className != "" {
-			return fmt.Sprintf("No knowledge sections or components matched query %q for class %q.", query, className)
+		details := make([]string, 0, 3)
+		if componentID != "" {
+			details = append(details, "component_id="+componentID)
 		}
-		return fmt.Sprintf("No knowledge sections or components matched query %q.", query)
+		if sectionID != "" {
+			details = append(details, "section_id="+sectionID)
+		}
+		if source != "" {
+			details = append(details, "source="+source)
+		}
+		detailSuffix := ""
+		if len(details) > 0 {
+			detailSuffix = " with " + strings.Join(details, ", ")
+		}
+		if className != "" {
+			return fmt.Sprintf("No knowledge sections or components matched query %q%s for class %q.", query, detailSuffix, className)
+		}
+		return fmt.Sprintf("No knowledge sections or components matched query %q%s.", query, detailSuffix)
 	}
 
 	var b strings.Builder
+	descriptor := query
+	if strings.TrimSpace(descriptor) == "" {
+		descriptor = source
+	}
+	if strings.TrimSpace(descriptor) == "" {
+		descriptor = "*"
+	}
 	if className != "" {
-		fmt.Fprintf(&b, "Knowledge results for query %q in class %q:\n\n", query, className)
+		fmt.Fprintf(&b, "Knowledge results for query %q in class %q:\n\n", descriptor, className)
 	} else {
-		fmt.Fprintf(&b, "Knowledge results for query %q:\n\n", query)
+		fmt.Fprintf(&b, "Knowledge results for query %q:\n\n", descriptor)
+	}
+	if source != "" || sectionID != "" || componentID != "" {
+		filters := make([]string, 0, 3)
+		if source != "" {
+			filters = append(filters, "source="+source)
+		}
+		if sectionID != "" {
+			filters = append(filters, "section_id="+sectionID)
+		}
+		if componentID != "" {
+			filters = append(filters, "component_id="+componentID)
+		}
+		fmt.Fprintf(&b, "Applied filters: %s\n\n", strings.Join(filters, ", "))
 	}
 	for i, result := range results {
 		if result.Kind == "section" {
@@ -589,6 +696,9 @@ func formatKnowledgeResults(query, className, kind string, results []search.Know
 			if len(s.Concepts) > 0 {
 				fmt.Fprintf(&b, "   concepts: %s\n", strings.Join(s.Concepts, ", "))
 			}
+			if len(s.SourcePaths) > 0 {
+				fmt.Fprintf(&b, "   source_paths: %s\n", strings.Join(compactPaths(s.SourcePaths, 3), ", "))
+			}
 			fmt.Fprintf(&b, "   summary: %s\n\n", s.Summary)
 		} else {
 			c := result.Component
@@ -600,10 +710,22 @@ func formatKnowledgeResults(query, className, kind string, results []search.Know
 			if len(c.Concepts) > 0 {
 				fmt.Fprintf(&b, "   concepts: %s\n", strings.Join(c.Concepts, ", "))
 			}
+			if len(c.SourcePaths) > 0 {
+				fmt.Fprintf(&b, "   source_paths: %s\n", strings.Join(compactPaths(c.SourcePaths, 3), ", "))
+			}
 			fmt.Fprintf(&b, "   content: %s\n\n", c.Content)
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func compactPaths(paths []string, limit int) []string {
+	if len(paths) <= limit || limit <= 0 {
+		return paths
+	}
+	clipped := append([]string{}, paths[:limit]...)
+	clipped = append(clipped, fmt.Sprintf("+%d more", len(paths)-limit))
+	return clipped
 }
 
 func formatToolSearchResults(query, className string, results []search.Result) string {

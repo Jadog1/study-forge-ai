@@ -58,12 +58,12 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		current.ModelPrices = incoming.ModelPrices
 	}
 
-	if err := config.Save(current); err != nil {
+	if err := s.Store().Config().SaveConfig(current); err != nil {
 		jsonError(w, http.StatusInternalServerError, "save config: "+err.Error())
 		return
 	}
 
-	reloaded, err := config.Load()
+	reloaded, err := s.Store().Config().LoadConfig()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "reload config: "+err.Error())
 		return

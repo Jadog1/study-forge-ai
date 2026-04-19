@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/state"
 )
 
@@ -26,7 +27,12 @@ type KnowledgeResult struct {
 
 // ByTags returns notes that match any of the supplied tags, ranked by hit count.
 func ByTags(tags []string) ([]Result, error) {
-	idx, err := state.LoadNotesIndex()
+	return ByTagsWithStore(tags, nil)
+}
+
+// ByTagsWithStore is like ByTags but reads from the provided store.
+func ByTagsWithStore(tags []string, store repository.Store) ([]Result, error) {
+	idx, err := resolveStore(store).Notes().LoadNotesIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load notes index: %w", err)
 	}
@@ -46,7 +52,12 @@ func ByTags(tags []string) ([]Result, error) {
 
 // ByClass returns all notes associated with the given class.
 func ByClass(class string) ([]Result, error) {
-	idx, err := state.LoadNotesIndex()
+	return ByClassWithStore(class, nil)
+}
+
+// ByClassWithStore is like ByClass but reads from the provided store.
+func ByClassWithStore(class string, store repository.Store) ([]Result, error) {
+	idx, err := resolveStore(store).Notes().LoadNotesIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load notes index: %w", err)
 	}
@@ -64,11 +75,17 @@ func ByClass(class string) ([]Result, error) {
 // contains a path that matches sourcePath (case-insensitive suffix match so
 // the caller may provide either an absolute path or just the filename).
 func BySourcePath(sourcePath string) ([]KnowledgeResult, error) {
-	sectionIdx, err := state.LoadSectionIndex()
+	return BySourcePathWithStore(sourcePath, nil)
+}
+
+// BySourcePathWithStore is like BySourcePath but reads from the provided store.
+func BySourcePathWithStore(sourcePath string, store repository.Store) ([]KnowledgeResult, error) {
+	knowledgeRepo := resolveStore(store).Knowledge()
+	sectionIdx, err := knowledgeRepo.LoadSectionIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load section index: %w", err)
 	}
-	componentIdx, err := state.LoadComponentIndex()
+	componentIdx, err := knowledgeRepo.LoadComponentIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load component index: %w", err)
 	}
@@ -98,11 +115,141 @@ func BySourcePath(sourcePath string) ([]KnowledgeResult, error) {
 	return results, nil
 }
 
+// BySourcePathLooseWithStore performs case-insensitive contains matching over
+// source paths. It also compares compacted alphanumeric forms so a query like
+// "week 10" can match filenames such as "week10-notes.md".
+func BySourcePathLooseWithStore(sourcePath, class, kind string, limit int, store repository.Store) ([]KnowledgeResult, error) {
+	knowledgeRepo := resolveStore(store).Knowledge()
+	sectionIdx, err := knowledgeRepo.LoadSectionIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load section index: %w", err)
+	}
+	componentIdx, err := knowledgeRepo.LoadComponentIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load component index: %w", err)
+	}
+
+	needleRaw := strings.ToLower(strings.TrimSpace(sourcePath))
+	needleCompact := compactAlphaNum(needleRaw)
+
+	matchesPath := func(paths []string) bool {
+		for _, p := range paths {
+			lower := strings.ToLower(filepath.ToSlash(p))
+			if needleRaw != "" && strings.Contains(lower, needleRaw) {
+				return true
+			}
+			if needleCompact != "" && strings.Contains(compactAlphaNum(lower), needleCompact) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var results []KnowledgeResult
+	if kind == "" || kind == "section" {
+		for _, sec := range sectionIdx.Sections {
+			if class != "" && !strings.EqualFold(sec.Class, class) {
+				continue
+			}
+			if matchesPath(sec.SourcePaths) {
+				results = append(results, KnowledgeResult{Kind: "section", Section: sec, Score: 3})
+			}
+		}
+	}
+	if kind == "" || kind == "component" {
+		for _, cmp := range componentIdx.Components {
+			if class != "" && !strings.EqualFold(cmp.Class, class) {
+				continue
+			}
+			if matchesPath(cmp.SourcePaths) {
+				results = append(results, KnowledgeResult{Kind: "component", Component: cmp, Score: 3})
+			}
+		}
+	}
+
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// BySectionIDWithStore returns a section plus its linked components.
+func BySectionIDWithStore(sectionID, class string, limit int, store repository.Store) ([]KnowledgeResult, error) {
+	knowledgeRepo := resolveStore(store).Knowledge()
+	sectionIdx, err := knowledgeRepo.LoadSectionIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load section index: %w", err)
+	}
+	componentIdx, err := knowledgeRepo.LoadComponentIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load component index: %w", err)
+	}
+
+	id := strings.TrimSpace(sectionID)
+	if id == "" {
+		return nil, nil
+	}
+
+	results := make([]KnowledgeResult, 0, 1)
+	for _, sec := range sectionIdx.Sections {
+		if !strings.EqualFold(sec.ID, id) {
+			continue
+		}
+		if class != "" && !strings.EqualFold(sec.Class, class) {
+			continue
+		}
+		results = append(results, KnowledgeResult{Kind: "section", Section: sec, Score: 10})
+		break
+	}
+
+	for _, cmp := range componentIdx.Components {
+		if !strings.EqualFold(cmp.SectionID, id) {
+			continue
+		}
+		if class != "" && !strings.EqualFold(cmp.Class, class) {
+			continue
+		}
+		results = append(results, KnowledgeResult{Kind: "component", Component: cmp, Score: 9})
+	}
+
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// ByComponentIDWithStore returns a component by ID.
+func ByComponentIDWithStore(componentID, class string, store repository.Store) ([]KnowledgeResult, error) {
+	componentIdx, err := resolveStore(store).Knowledge().LoadComponentIndex()
+	if err != nil {
+		return nil, fmt.Errorf("load component index: %w", err)
+	}
+	id := strings.TrimSpace(componentID)
+	if id == "" {
+		return nil, nil
+	}
+	for _, cmp := range componentIdx.Components {
+		if !strings.EqualFold(cmp.ID, id) {
+			continue
+		}
+		if class != "" && !strings.EqualFold(cmp.Class, class) {
+			continue
+		}
+		return []KnowledgeResult{{Kind: "component", Component: cmp, Score: 10}}, nil
+	}
+	return nil, nil
+}
+
 // ByQuery returns notes ranked by simple text relevance across summary, tags,
 // concepts, class, and source fields. When query is empty and class is set, it
 // falls back to all notes for that class.
 func ByQuery(query, class string, limit int) ([]Result, error) {
-	idx, err := state.LoadNotesIndex()
+	return ByQueryWithStore(query, class, limit, nil)
+}
+
+// ByQueryWithStore is like ByQuery but reads from the provided store.
+func ByQueryWithStore(query, class string, limit int, store repository.Store) ([]Result, error) {
+	idx, err := resolveStore(store).Notes().LoadNotesIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load notes index: %w", err)
 	}
@@ -134,11 +281,17 @@ func ByQuery(query, class string, limit int) ([]Result, error) {
 
 // ByKnowledgeQuery returns sections/components ranked by lexical relevance.
 func ByKnowledgeQuery(query, class string, limit int) ([]KnowledgeResult, error) {
-	sectionIdx, err := state.LoadSectionIndex()
+	return ByKnowledgeQueryWithStore(query, class, limit, nil)
+}
+
+// ByKnowledgeQueryWithStore is like ByKnowledgeQuery but reads from the provided store.
+func ByKnowledgeQueryWithStore(query, class string, limit int, store repository.Store) ([]KnowledgeResult, error) {
+	knowledgeRepo := resolveStore(store).Knowledge()
+	sectionIdx, err := knowledgeRepo.LoadSectionIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load section index: %w", err)
 	}
-	componentIdx, err := state.LoadComponentIndex()
+	componentIdx, err := knowledgeRepo.LoadComponentIndex()
 	if err != nil {
 		return nil, fmt.Errorf("load component index: %w", err)
 	}
@@ -256,6 +409,17 @@ func tokenize(query string) []string {
 	return tokens
 }
 
+func compactAlphaNum(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range strings.ToLower(text) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func sectionQueryScore(section state.Section, rawQuery string, tokens []string, class string) int {
 	name := strings.ToLower(section.Title)
 	summary := strings.ToLower(section.Summary)
@@ -335,4 +499,11 @@ func knowledgeResultID(result KnowledgeResult) string {
 		return result.Component.ID
 	}
 	return result.Section.ID
+}
+
+func resolveStore(store repository.Store) repository.Store {
+	if store == nil {
+		return repository.NewFilesystemStore()
+	}
+	return store
 }

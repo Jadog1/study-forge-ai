@@ -39,7 +39,7 @@ func (s *Server) handleQuizDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secIdx, err := state.LoadSectionIndex()
+	secIdx, err := s.Store().Knowledge().LoadSectionIndex()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load sections: "+err.Error())
 		return
@@ -48,7 +48,7 @@ func (s *Server) handleQuizDashboard(w http.ResponseWriter, r *http.Request) {
 		secIdx.Sections[i].Embedding = nil
 	}
 
-	cmpIdx, err := state.LoadComponentIndex()
+	cmpIdx, err := s.Store().Knowledge().LoadComponentIndex()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load components: "+err.Error())
 		return
@@ -57,7 +57,7 @@ func (s *Server) handleQuizDashboard(w http.ResponseWriter, r *http.Request) {
 		cmpIdx.Components[i].Embedding = nil
 	}
 
-	cache, err := state.LoadTrackedQuizCache()
+	cache, err := s.Store().QuizAttempts().LoadTrackedQuizCache()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load tracked cache: "+err.Error())
 		return
@@ -179,7 +179,7 @@ func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
 	flush := sseSetup(w)
 	flush()
 
-	q, quizPath, err := quiz.NewQuizStream(req.Class, opts, provider, cfg, func(progress quiz.ProgressEvent) {
+	q, quizPath, err := s.QuizService().NewQuizStream(req.Class, opts, provider, cfg, func(progress quiz.ProgressEvent) {
 		payload := map[string]string{
 			"type":   "progress",
 			"label":  progress.Label,
@@ -201,7 +201,7 @@ func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
 	quizID := strings.TrimSuffix(filepath.Base(quizPath), ".yaml")
 	sfqPath := strings.TrimSuffix(quizPath, ".yaml") + ".sfq"
 
-	_, cacheErr := state.RegisterTrackedQuiz(req.Class, quizPath, sfqPath)
+	_, cacheErr := s.Store().QuizAttempts().RegisterTrackedQuiz(req.Class, quizPath, sfqPath)
 	if cacheErr != nil {
 		sseEvent(w, flush, map[string]string{
 			"type":    "warning",
@@ -210,7 +210,7 @@ func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = sfq.Track(sfqPath)
-	_, _ = tracking.SyncTrackedQuizSessions()
+	_, _ = s.SyncService().SyncTrackedQuizSessions()
 
 	sseEvent(w, flush, map[string]any{
 		"type":           "done",
@@ -227,7 +227,7 @@ func (s *Server) handleSyncTrackedSessions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	report, err := tracking.SyncTrackedQuizSessionsWithOptions(tracking.SyncOptions{BackfillImported: true})
+	report, err := s.SyncService().SyncTrackedQuizSessionsWithOptions(tracking.SyncOptions{BackfillImported: true})
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "sync failed: "+err.Error())
 		return

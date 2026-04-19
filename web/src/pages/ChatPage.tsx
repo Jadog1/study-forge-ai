@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Send, Loader2, MessageSquare, ChevronDown, PlusCircle, AlertTriangle } from 'lucide-react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { streamChat, fetchClasses } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
-import type { ChatAction, ChatMessage, ChatStreamEvent } from '../types';
+import type { ChatAction, ChatMessage, ChatMode, ChatStreamEvent } from '../types';
+
+const CHAT_MODE_OPTIONS: Array<{ value: ChatMode; label: string }> = [
+  { value: 'standard', label: 'Standard' },
+  { value: 'socratic', label: 'Socratic tutor' },
+  { value: 'explain_back', label: 'Explain-back coach' },
+];
 
 export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -11,6 +18,7 @@ export function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [classes, setClasses] = useState<string[]>([]);
   const [selectedClass, setSelectedClass] = useState('');
+  const [mode, setMode] = useState<ChatMode>('standard');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -61,7 +69,7 @@ export function ChatPage() {
     };
 
     try {
-      await streamChat(text, selectedClass, (event: ChatStreamEvent) => {
+      await streamChat(text, selectedClass, mode, (event: ChatStreamEvent) => {
         switch (event.type) {
           case 'chunk':
             updateAssistant((m) => ({
@@ -139,6 +147,22 @@ export function ChatPage() {
       <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 lg:px-6">
         <h1 className="text-lg font-semibold text-slate-900">Chat</h1>
         <div className="ml-auto flex items-center gap-2">
+          <div className="relative">
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as ChatMode)}
+              disabled={streaming}
+              className="appearance-none rounded-lg border border-slate-200 bg-white py-1.5 pl-3 pr-8 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="Chat mode"
+            >
+              {CHAT_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          </div>
           {classes.length > 0 && (
             <div className="relative">
               <select
@@ -227,6 +251,14 @@ export function ChatPage() {
   );
 }
 
+/**
+ * Remove tool call blocks from message content before displaying to user.
+ * Tool calls are internal agent protocol and shouldn't be visible in the UI.
+ */
+function stripToolCalls(content: string): string {
+  return content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+}
+
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
 
@@ -265,8 +297,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <div className="prose prose-sm prose-slate max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-slate-800 prose-pre:text-slate-100 prose-code:text-indigo-600 prose-code:before:content-none prose-code:after:content-none">
-            <Markdown>{message.content}</Markdown>
+          <div className="prose prose-sm prose-slate max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-slate-800 prose-pre:text-slate-100 prose-code:text-indigo-600 prose-code:before:content-none prose-code:after:content-none prose-table:text-sm">
+            <Markdown remarkPlugins={[remarkGfm]}>{stripToolCalls(message.content)}</Markdown>
             {message.streaming && (
               <span className="inline-block h-4 w-1.5 animate-pulse bg-indigo-500 align-middle ml-0.5 rounded-sm" />
             )}

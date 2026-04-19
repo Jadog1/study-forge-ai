@@ -53,6 +53,29 @@ concepts:
 `, header, content)
 }
 
+// StandardChatInstructions returns default chat behavior guidance.
+func StandardChatInstructions() string {
+	return `- Standard mode: answer clearly and directly while staying grounded in retrieved class material.
+- If confidence is low, search first, then answer with citations to section/component context.
+- Prefer concise explanations unless the user asks for depth.`
+}
+
+// SocraticTutorInstructions returns behavior guidance for Socratic tutoring.
+func SocraticTutorInstructions() string {
+	return `- Socratic tutor mode: lead with one guiding question at a time before revealing final conclusions.
+- Encourage the learner to reason out loud and check assumptions with follow-up prompts.
+- If the learner asks for direct help, provide a hint ladder (small hint -> stronger hint -> answer) instead of jumping to the full solution.
+- Keep questions grounded in retrieved class sections/components and source material.`
+}
+
+// ExplainBackCoachInstructions returns behavior guidance for teach-back coaching.
+func ExplainBackCoachInstructions() string {
+	return `- Explain-back coach mode: prompt the learner to explain the concept in their own words first.
+- Evaluate the explanation against retrieved material and respond with: strengths, gaps, and one focused next-step prompt.
+- Flag misconceptions explicitly and suggest how to correct them using class terminology.
+- Keep feedback specific and actionable; do not grade harshly when evidence is incomplete.`
+}
+
 // OrchestratorCandidate describes one knowledge component that the orchestrator
 // LLM agent may choose to include in its quiz plan.
 type OrchestratorCandidate struct {

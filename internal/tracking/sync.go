@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/studyforge/study-agent/internal/quiz"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
 )
@@ -28,28 +29,140 @@ type SyncOptions struct {
 	BackfillImported bool
 }
 
+// SyncService owns tracked-session sync dependencies.
+// A service instance should be created at startup and reused.
+type SyncService struct {
+	store       repository.Store
+	persistence syncPersistence
+	external    syncExternal
+}
+
+type syncPersistence interface {
+	LoadTrackedQuizCache() (*state.TrackedQuizCache, error)
+	SaveTrackedQuizCache(*state.TrackedQuizCache) error
+	SaveQuizResults(*state.QuizResults, string, string) error
+	AppendQuizQuestionHistory(string, state.Quiz, state.QuizResults) error
+}
+
+type syncExternal interface {
+	HistorySessions() ([]sfq.SessionResult, error)
+	ResultsSession(string) (*sfq.SessionResult, error)
+	LoadQuizDoc(string) (*state.Quiz, error)
+}
+
+type defaultSyncPersistence struct {
+	store repository.Store
+}
+
+func (p defaultSyncPersistence) LoadTrackedQuizCache() (*state.TrackedQuizCache, error) {
+	if p.store == nil {
+		return loadTrackedQuizCache()
+	}
+	return p.store.QuizAttempts().LoadTrackedQuizCache()
+}
+
+func (p defaultSyncPersistence) SaveTrackedQuizCache(cache *state.TrackedQuizCache) error {
+	if p.store == nil {
+		return saveTrackedQuizCache(cache)
+	}
+	return p.store.QuizAttempts().SaveTrackedQuizCache(cache)
+}
+
+func (p defaultSyncPersistence) SaveQuizResults(results *state.QuizResults, class, quizID string) error {
+	if p.store == nil {
+		return saveQuizResults(results, class, quizID)
+	}
+	return p.store.QuizAttempts().SaveQuizResults(results, class, quizID)
+}
+
+func (p defaultSyncPersistence) AppendQuizQuestionHistory(class string, q state.Quiz, results state.QuizResults) error {
+	if p.store == nil {
+		return appendQuizQuestionHistory(class, q, results)
+	}
+	return p.store.QuizAttempts().AppendQuizQuestionHistory(class, q, results)
+}
+
+type defaultSyncExternal struct{}
+
+func (defaultSyncExternal) HistorySessions() ([]sfq.SessionResult, error) {
+	return historySessions()
+}
+
+func (defaultSyncExternal) ResultsSession(sessionID string) (*sfq.SessionResult, error) {
+	return resultsSession(sessionID)
+}
+
+func (defaultSyncExternal) LoadQuizDoc(path string) (*state.Quiz, error) {
+	return loadQuizDoc(path)
+}
+
 var (
-	loadTrackedQuizCache      = state.LoadTrackedQuizCache
-	saveTrackedQuizCache      = state.SaveTrackedQuizCache
-	historySessions           = sfq.HistorySessions
-	resultsSession            = sfq.ResultsSession
-	loadQuizDoc               = quiz.LoadQuiz
-	saveQuizResults           = state.SaveQuizResults
-	appendQuizQuestionHistory = state.AppendQuizQuestionHistory
+	loadTrackedQuizCache = func() (*state.TrackedQuizCache, error) {
+		return resolveStore(nil).QuizAttempts().LoadTrackedQuizCache()
+	}
+	saveTrackedQuizCache = func(cache *state.TrackedQuizCache) error {
+		return resolveStore(nil).QuizAttempts().SaveTrackedQuizCache(cache)
+	}
+	historySessions = sfq.HistorySessions
+	resultsSession  = sfq.ResultsSession
+	loadQuizDoc     = quiz.LoadQuiz
+	saveQuizResults = func(results *state.QuizResults, class, quizID string) error {
+		return resolveStore(nil).QuizAttempts().SaveQuizResults(results, class, quizID)
+	}
+	appendQuizQuestionHistory = func(class string, q state.Quiz, results state.QuizResults) error {
+		return resolveStore(nil).QuizAttempts().AppendQuizQuestionHistory(class, q, results)
+	}
 )
+
+// NewSyncService constructs a sync service with injected persistence.
+func NewSyncService(store repository.Store) *SyncService {
+	var resolved repository.Store
+	if store != nil {
+		resolved = resolveStore(store)
+	}
+	svc := &SyncService{
+		store:       resolved,
+		persistence: defaultSyncPersistence{store: resolved},
+		external:    defaultSyncExternal{},
+	}
+
+	return svc
+}
 
 // SyncTrackedQuizSessions imports unseen sfq tracked sessions into quiz
 // results and section/component question history.
 func SyncTrackedQuizSessions() (SyncReport, error) {
-	return SyncTrackedQuizSessionsWithOptions(SyncOptions{})
+	return NewSyncService(nil).SyncTrackedQuizSessions()
 }
 
 // SyncTrackedQuizSessionsWithOptions imports tracked sessions with optional
 // reconciliation of already-imported sessions.
 func SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
+	return NewSyncService(nil).SyncTrackedQuizSessionsWithOptions(opts)
+}
+
+// SyncTrackedQuizSessionsWithStore imports tracked sessions using the provided
+// repository store for persistence.
+func SyncTrackedQuizSessionsWithStore(store repository.Store) (SyncReport, error) {
+	return NewSyncService(store).SyncTrackedQuizSessions()
+}
+
+// SyncTrackedQuizSessionsWithOptionsAndStore imports tracked sessions with
+// options using the provided persistence store.
+func SyncTrackedQuizSessionsWithOptionsAndStore(opts SyncOptions, store repository.Store) (SyncReport, error) {
+	return NewSyncService(store).SyncTrackedQuizSessionsWithOptions(opts)
+}
+
+// SyncTrackedQuizSessions imports unseen tracked sessions.
+func (s *SyncService) SyncTrackedQuizSessions() (SyncReport, error) {
+	return s.SyncTrackedQuizSessionsWithOptions(SyncOptions{})
+}
+
+// SyncTrackedQuizSessionsWithOptions imports tracked sessions with options.
+func (s *SyncService) SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
 	report := SyncReport{}
 
-	cache, err := loadTrackedQuizCache()
+	cache, err := s.persistence.LoadTrackedQuizCache()
 	if err != nil {
 		return report, err
 	}
@@ -57,7 +170,7 @@ func SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
 		return report, nil
 	}
 
-	history, err := historySessions()
+	history, err := s.external.HistorySessions()
 	if err != nil {
 		return report, err
 	}
@@ -86,7 +199,7 @@ func SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
 			continue
 		}
 
-		quizDoc, loadErr := loadQuizDoc(record.QuizPath)
+		quizDoc, loadErr := s.external.LoadQuizDoc(record.QuizPath)
 		if loadErr != nil {
 			report.FailedSessions += len(matches)
 			continue
@@ -111,7 +224,7 @@ func SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
 				continue
 			}
 
-			details, detailsErr := resultsSession(sessionID)
+			details, detailsErr := s.external.ResultsSession(sessionID)
 			if detailsErr != nil || details == nil {
 				report.FailedSessions++
 				continue
@@ -152,11 +265,11 @@ func SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
 				})
 			}
 
-			if err := saveQuizResults(&quizResults, quizClass, attemptID); err != nil {
+			if err := s.persistence.SaveQuizResults(&quizResults, quizClass, attemptID); err != nil {
 				report.FailedSessions++
 				continue
 			}
-			if err := appendQuizQuestionHistory(quizClass, *quizDoc, quizResults); err != nil {
+			if err := s.persistence.AppendQuizQuestionHistory(quizClass, *quizDoc, quizResults); err != nil {
 				report.FailedSessions++
 				continue
 			}
@@ -170,7 +283,7 @@ func SyncTrackedQuizSessionsWithOptions(opts SyncOptions) (SyncReport, error) {
 	}
 
 	report.PendingQuizzes = pendingCount(cache)
-	if err := saveTrackedQuizCache(cache); err != nil {
+	if err := s.persistence.SaveTrackedQuizCache(cache); err != nil {
 		return report, fmt.Errorf("save tracked quiz cache: %w", err)
 	}
 	return report, nil
@@ -299,4 +412,11 @@ func firstNonZero(values ...time.Time) time.Time {
 		}
 	}
 	return time.Now().UTC()
+}
+
+func resolveStore(store repository.Store) repository.Store {
+	if store == nil {
+		return repository.NewFilesystemStore()
+	}
+	return store
 }

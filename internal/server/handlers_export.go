@@ -28,7 +28,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := state.ExportKnowledgeDataset(req.OutputPath, state.KnowledgeExportOptions{
+	result, err := s.Store().Export().ExportKnowledgeDataset(req.OutputPath, state.KnowledgeExportOptions{
 		Class:             req.Class,
 		IncludeEmbeddings: req.IncludeEmbeddings,
 	})

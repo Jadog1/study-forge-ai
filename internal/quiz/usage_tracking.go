@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/state"
 	"github.com/studyforge/study-agent/plugins"
 )
@@ -14,11 +15,11 @@ const (
 	quizOperationComponent    = "quiz_component"
 )
 
-func generateWithQuizUsage(provider plugins.AIProvider, prompt, operation, class string, cfg *config.Config) (string, error) {
+func generateWithQuizUsage(provider plugins.AIProvider, prompt, operation, class string, cfg *config.Config, usageRepo repository.UsageRepository) (string, error) {
 	if usageAware, ok := provider.(plugins.UsageAwareAIProvider); ok {
 		result, err := usageAware.GenerateWithMetadata(prompt)
 		if err != nil {
-			appendQuizUsageFailure(provider, operation, class)
+			appendQuizUsageFailure(provider, operation, class, usageRepo)
 			return "", err
 		}
 		appendQuizUsageEvent(state.UsageEvent{
@@ -32,13 +33,13 @@ func generateWithQuizUsage(provider plugins.AIProvider, prompt, operation, class
 			CostUSD:      quizCostForResult(result, cfg),
 			Class:        strings.TrimSpace(class),
 			CreatedAt:    time.Now().UTC(),
-		})
+		}, usageRepo)
 		return result.Text, nil
 	}
 
 	resp, err := provider.Generate(prompt)
 	if err != nil {
-		appendQuizUsageFailure(provider, operation, class)
+		appendQuizUsageFailure(provider, operation, class, usageRepo)
 		return "", err
 	}
 
@@ -54,22 +55,22 @@ func generateWithQuizUsage(provider plugins.AIProvider, prompt, operation, class
 		CostUSD:      config.CostForTokens(strings.TrimSpace(provider.Model()), inputTokens, outputTokens, cfg),
 		Class:        strings.TrimSpace(class),
 		CreatedAt:    time.Now().UTC(),
-	})
+	}, usageRepo)
 
 	return resp, nil
 }
 
-func appendQuizUsageFailure(provider plugins.AIProvider, operation, class string) {
+func appendQuizUsageFailure(provider plugins.AIProvider, operation, class string, usageRepo repository.UsageRepository) {
 	appendQuizUsageEvent(state.UsageEvent{
 		Operation: operation,
 		Provider:  strings.TrimSpace(provider.Name()),
 		Model:     strings.TrimSpace(provider.Model()),
 		Class:     strings.TrimSpace(class),
 		CreatedAt: time.Now().UTC(),
-	})
+	}, usageRepo)
 }
 
-func appendQuizUsageEvent(event state.UsageEvent) {
+func appendQuizUsageEvent(event state.UsageEvent, usageRepo repository.UsageRepository) {
 	if strings.TrimSpace(event.Provider) == "" {
 		event.Provider = "unknown"
 	}
@@ -79,7 +80,10 @@ func appendQuizUsageEvent(event state.UsageEvent) {
 	if strings.TrimSpace(event.Operation) == "" {
 		event.Operation = "quiz_generation"
 	}
-	_ = state.AppendUsageEvent(event)
+	if usageRepo == nil {
+		usageRepo = resolveStore(nil).Usage()
+	}
+	_ = usageRepo.AppendUsageEvent(event)
 }
 
 func quizCostForResult(result plugins.GenerateResult, cfg *config.Config) float64 {
@@ -100,4 +104,11 @@ func estimateTokens(text string) int {
 		return 1
 	}
 	return tokens
+}
+
+func resolveStore(store repository.Store) repository.Store {
+	if store == nil {
+		return repository.NewFilesystemStore()
+	}
+	return store
 }

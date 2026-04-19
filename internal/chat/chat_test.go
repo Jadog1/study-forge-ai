@@ -2,6 +2,29 @@ package chat
 
 import "testing"
 
+func TestNormalizeMode_DefaultAndAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want Mode
+	}{
+		{name: "default empty", in: "", want: ModeStandard},
+		{name: "socratic", in: "socratic", want: ModeSocratic},
+		{name: "explain underscore", in: "explain_back", want: ModeExplainBack},
+		{name: "explain hyphen", in: "explain-back", want: ModeExplainBack},
+		{name: "explain spaced", in: "explain back", want: ModeExplainBack},
+		{name: "unknown falls back", in: "something-else", want: ModeStandard},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeMode(tt.in); got != tt.want {
+				t.Fatalf("NormalizeMode(%q)=%q want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestToolQuizDirectives_UsesTopLevelCountForSingleDirective(t *testing.T) {
 	directives, err := toolQuizDirectives(map[string]any{
 		"count": 1,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/prompts"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/plugins"
 )
 
@@ -35,6 +36,7 @@ func runOrchestratorAgent(
 	typePreference string,
 	provider plugins.AIProvider,
 	cfg *config.Config,
+	usageRepo repository.UsageRepository,
 	onProgress func(ProgressEvent),
 ) ([]OrchestratorDirective, error) {
 	if len(candidates) == 0 {
@@ -72,7 +74,7 @@ func runOrchestratorAgent(
 	const maxSteps = 4
 	transcript := prompt
 	for step := 0; step < maxSteps; step++ {
-		resp, err := generateWithQuizUsage(provider, transcript, quizOperationOrchestrator, class, cfg)
+		resp, err := generateWithQuizUsage(provider, transcript, quizOperationOrchestrator, class, cfg, usageRepo)
 		if err != nil {
 			return nil, fmt.Errorf("orchestrator agent: %w", err)
 		}
@@ -113,6 +115,7 @@ func runFocusedOrchestratorAgent(
 	typePreference string,
 	provider plugins.AIProvider,
 	cfg *config.Config,
+	usageRepo repository.UsageRepository,
 	onProgress func(ProgressEvent),
 ) ([]OrchestratorDirective, error) {
 	if len(candidates) == 0 {
@@ -142,7 +145,7 @@ func runFocusedOrchestratorAgent(
 	const maxSteps = 4
 	transcript := prompt
 	for step := 0; step < maxSteps; step++ {
-		resp, err := generateWithQuizUsage(provider, transcript, quizOperationOrchestrator, class, cfg)
+		resp, err := generateWithQuizUsage(provider, transcript, quizOperationOrchestrator, class, cfg, usageRepo)
 		if err != nil {
 			return nil, fmt.Errorf("focused orchestrator agent: %w", err)
 		}

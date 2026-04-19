@@ -10,6 +10,7 @@ import (
 type chatRequest struct {
 	Message string `json:"message"`
 	Class   string `json:"class"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -30,11 +31,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.Config()
 	provider := orchestrator.BuildProviderForRole("chat", cfg)
+	mode := chat.NormalizeMode(req.Mode)
 
 	flush := sseSetup(w)
 	flush()
 
-	err := chat.AskStream(provider, cfg, req.Class, req.Message, func(event chat.StreamEvent) error {
+	err := s.ChatService().AskStreamWithMode(provider, cfg, req.Class, req.Message, mode, func(event chat.StreamEvent) error {
 		payload := map[string]string{}
 		switch event.Kind {
 		case chat.StreamEventChunk:

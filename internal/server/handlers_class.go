@@ -7,7 +7,7 @@ import (
 )
 
 func (s *Server) handleListClasses(w http.ResponseWriter, r *http.Request) {
-	names, err := class.List()
+	names, err := s.Store().Classes().ListClasses()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "list classes: "+err.Error())
 		return
@@ -33,7 +33,7 @@ func (s *Server) handleCreateClass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := class.Create(req.Name); err != nil {
+	if err := s.Store().Classes().CreateClass(req.Name); err != nil {
 		jsonError(w, http.StatusInternalServerError, "create class: "+err.Error())
 		return
 	}
@@ -52,10 +52,10 @@ type classDetail struct {
 }
 
 func (s *Server) handleGetClass(w http.ResponseWriter, r *http.Request, className string) {
-	syllabus, _ := class.LoadSyllabus(className)
-	rules, _ := class.LoadRules(className)
-	ctx, _ := class.LoadContext(className)
-	roster, _ := class.LoadNoteRoster(className)
+	syllabus, _ := s.Store().Classes().LoadSyllabus(className)
+	rules, _ := s.Store().Classes().LoadRules(className)
+	ctx, _ := s.Store().Classes().LoadContext(className)
+	roster, _ := s.Store().Classes().LoadNoteRoster(className)
 
 	if syllabus == nil {
 		syllabus = &class.Syllabus{Class: className, Topics: []class.Topic{}}
@@ -79,16 +79,16 @@ func (s *Server) handleGetClass(w http.ResponseWriter, r *http.Request, classNam
 	}
 
 	profiles := make(map[string]string)
-	for _, p := range class.ContextProfiles() {
-		text, err := class.LoadProfileContextText(className, p.Kind)
+	for _, p := range s.Store().Classes().ContextProfiles() {
+		text, err := s.Store().Classes().LoadProfileContextText(className, p.Kind)
 		if err == nil {
 			profiles[p.Kind] = text
 		}
 	}
 
 	coverage := make(map[string]*class.CoverageScope)
-	for _, p := range class.ContextProfiles() {
-		scope, err := class.LoadCoverageScope(className, p.Kind)
+	for _, p := range s.Store().Classes().ContextProfiles() {
+		scope, err := s.Store().Classes().LoadCoverageScope(className, p.Kind)
 		if err == nil && scope != nil {
 			coverage[p.Kind] = scope
 		}
@@ -120,7 +120,7 @@ func (s *Server) handleUpdateClassContext(w http.ResponseWriter, r *http.Request
 		Class:        className,
 		ContextFiles: req.ContextFiles,
 	}
-	if err := class.SaveContext(className, ctx); err != nil {
+	if err := s.Store().Classes().SaveContext(className, ctx); err != nil {
 		jsonError(w, http.StatusInternalServerError, "save context: "+err.Error())
 		return
 	}
@@ -139,7 +139,7 @@ func (s *Server) handleUpdateProfileContext(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := class.SaveProfileContextText(className, profileKind, req.Text); err != nil {
+	if err := s.Store().Classes().SaveProfileContextText(className, profileKind, req.Text); err != nil {
 		jsonError(w, http.StatusInternalServerError, "save profile context: "+err.Error())
 		return
 	}
@@ -148,7 +148,7 @@ func (s *Server) handleUpdateProfileContext(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleGetRoster(w http.ResponseWriter, r *http.Request, className string) {
-	roster, err := class.LoadNoteRoster(className)
+	roster, err := s.Store().Classes().LoadNoteRoster(className)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load roster: "+err.Error())
 		return
@@ -169,7 +169,7 @@ func (s *Server) handleUpdateRoster(w http.ResponseWriter, r *http.Request, clas
 	}
 
 	if len(req.Labels) > 0 {
-		roster, err := class.ReorderNoteRosterEntries(className, req.Labels)
+		roster, err := s.Store().Classes().ReorderNoteRosterEntries(className, req.Labels)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "reorder roster: "+err.Error())
 			return
@@ -182,7 +182,7 @@ func (s *Server) handleUpdateRoster(w http.ResponseWriter, r *http.Request, clas
 		Class:   className,
 		Entries: req.Entries,
 	}
-	if err := class.SaveNoteRoster(className, roster); err != nil {
+	if err := s.Store().Classes().SaveNoteRoster(className, roster); err != nil {
 		jsonError(w, http.StatusInternalServerError, "save roster: "+err.Error())
 		return
 	}
@@ -196,7 +196,7 @@ func (s *Server) handleAddRosterEntry(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 
-	roster, err := class.UpsertNoteRosterEntry(className, entry)
+	roster, err := s.Store().Classes().UpsertNoteRosterEntry(className, entry)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "upsert roster entry: "+err.Error())
 		return
@@ -205,7 +205,7 @@ func (s *Server) handleAddRosterEntry(w http.ResponseWriter, r *http.Request, cl
 }
 
 func (s *Server) handleRemoveRosterEntry(w http.ResponseWriter, r *http.Request, className, label string) {
-	roster, err := class.RemoveNoteRosterEntry(className, label)
+	roster, err := s.Store().Classes().RemoveNoteRosterEntry(className, label)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "remove roster entry: "+err.Error())
 		return
@@ -214,7 +214,7 @@ func (s *Server) handleRemoveRosterEntry(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleGetCoverage(w http.ResponseWriter, r *http.Request, className, kind string) {
-	scope, err := class.LoadCoverageScope(className, kind)
+	scope, err := s.Store().Classes().LoadCoverageScope(className, kind)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load coverage: "+err.Error())
 		return
@@ -237,7 +237,7 @@ func (s *Server) handleUpdateCoverage(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 
-	if err := class.SaveCoverageScope(className, kind, &scope); err != nil {
+	if err := s.Store().Classes().SaveCoverageScope(className, kind, &scope); err != nil {
 		jsonError(w, http.StatusInternalServerError, "save coverage: "+err.Error())
 		return
 	}

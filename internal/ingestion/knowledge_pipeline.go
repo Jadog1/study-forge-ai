@@ -12,6 +12,7 @@ import (
 
 	"github.com/studyforge/study-agent/internal/config"
 	"github.com/studyforge/study-agent/internal/prompts"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/state"
 	"github.com/studyforge/study-agent/plugins"
 	"gopkg.in/yaml.v3"
@@ -36,6 +37,12 @@ func CollectSupportedFiles(root string) ([]string, error) {
 // IngestKnowledgeFolderStream runs the full compose/embed/consolidate pipeline
 // for all supported files found recursively under folderPath.
 func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
+	return IngestKnowledgeFolderWithStore(folderPath, class, provider, embeddingProvider, cfg, nil, onProgress)
+}
+
+// IngestKnowledgeFolderWithStore runs the full compose/embed/consolidate
+// pipeline and persists results through the provided storage abstraction.
+func IngestKnowledgeFolderWithStore(folderPath, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, store repository.Store, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
 	emit := func(event ProgressEvent) {
 		if onProgress != nil {
 			onProgress(event)
@@ -53,13 +60,19 @@ func IngestKnowledgeFolderStream(folderPath, class string, provider plugins.AIPr
 		return KnowledgeIngestResult{}, fmt.Errorf("no supported files found in %q", folderPath)
 	}
 
-	return runKnowledgePipeline(files, class, provider, embeddingProvider, cfg, onProgress)
+	return runKnowledgePipeline(files, class, provider, embeddingProvider, cfg, resolveStore(store), onProgress)
 }
 
 // IngestKnowledgeFilesStream runs the full compose/embed/consolidate pipeline
 // for an explicit list of file paths. Files that do not exist or have an
 // unsupported extension are skipped with a warning event.
 func IngestKnowledgeFilesStream(files []string, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
+	return IngestKnowledgeFilesWithStore(files, class, provider, embeddingProvider, cfg, nil, onProgress)
+}
+
+// IngestKnowledgeFilesWithStore runs the compose/embed/consolidate pipeline
+// for explicit file paths and persists through the provided store.
+func IngestKnowledgeFilesWithStore(files []string, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, store repository.Store, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
 	emit := func(event ProgressEvent) {
 		if onProgress != nil {
 			onProgress(event)
@@ -81,11 +94,11 @@ func IngestKnowledgeFilesStream(files []string, class string, provider plugins.A
 		return KnowledgeIngestResult{}, fmt.Errorf("no supported files to ingest")
 	}
 
-	return runKnowledgePipeline(validated, class, provider, embeddingProvider, cfg, onProgress)
+	return runKnowledgePipeline(validated, class, provider, embeddingProvider, cfg, resolveStore(store), onProgress)
 }
 
 // runKnowledgePipeline is the shared implementation for folder and file-list ingestion.
-func runKnowledgePipeline(files []string, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
+func runKnowledgePipeline(files []string, class string, provider plugins.AIProvider, embeddingProvider plugins.EmbeddingProvider, cfg *config.Config, store repository.Store, onProgress func(ProgressEvent)) (KnowledgeIngestResult, error) {
 	emit := func(event ProgressEvent) {
 		if onProgress != nil {
 			onProgress(event)
@@ -93,6 +106,8 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 	}
 
 	result := KnowledgeIngestResult{IngestRunID: fmt.Sprintf("ingest-%d", time.Now().UnixNano())}
+	knowledgeRepo := store.Knowledge()
+	usageRepo := store.Usage()
 
 	// Warn if embeddings are disabled
 	if embeddingProvider == nil || embeddingProvider.Disabled() {
@@ -103,11 +118,11 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 			Err:    nil,
 		})
 	}
-	sectionIndex, err := state.LoadSectionIndex()
+	sectionIndex, err := knowledgeRepo.LoadSectionIndex()
 	if err != nil {
 		return result, fmt.Errorf("load section index: %w", err)
 	}
-	componentIndex, err := state.LoadComponentIndex()
+	componentIndex, err := knowledgeRepo.LoadComponentIndex()
 	if err != nil {
 		return result, fmt.Errorf("load component index: %w", err)
 	}
@@ -122,7 +137,7 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 		emit(ProgressEvent{Label: "Process file", Detail: filePath, Done: true})
 		result.Notes = append(result.Notes, note)
 		if summarizeUsage.Metadata.Provider != "" {
-			_ = state.AppendUsageEvent(state.UsageEvent{
+			_ = usageRepo.AppendUsageEvent(state.UsageEvent{
 				Operation:    "ingest.summarize",
 				Provider:     summarizeUsage.Metadata.Provider,
 				Model:        summarizeUsage.Metadata.Model,
@@ -154,7 +169,7 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 		emit(ProgressEvent{Label: "Compose sections", Detail: fmt.Sprintf("%s (%d section(s))", note.ID, len(sections.Sections)), Done: true})
 
 		if usage.Metadata.Provider != "" {
-			_ = state.AppendUsageEvent(state.UsageEvent{
+			_ = usageRepo.AppendUsageEvent(state.UsageEvent{
 				Operation:    "ingest.compose",
 				Provider:     usage.Metadata.Provider,
 				Model:        usage.Metadata.Model,
@@ -172,9 +187,9 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 
 		for _, section := range sections.Sections {
 			normalizedSection, components := materializeKnowledgeUnits(section, note, class)
-			components = attachEmbeddings(&normalizedSection, components, embeddingProvider, emit, result.IngestRunID, cfg)
+			components = attachEmbeddings(&normalizedSection, components, embeddingProvider, emit, result.IngestRunID, cfg, usageRepo)
 
-			candidates := state.SearchSectionsByEmbedding(sectionIndex, normalizedSection.Embedding, 3)
+			candidates := knowledgeRepo.SearchSectionsByEmbedding(sectionIndex, normalizedSection.Embedding, 3)
 			merged := false
 			for _, candidate := range candidates {
 				if strings.TrimSpace(candidate.ID) == "" || candidate.ID == normalizedSection.ID {
@@ -187,7 +202,7 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 					continue
 				}
 				if reviewUsage.Metadata.Provider != "" {
-					_ = state.AppendUsageEvent(state.UsageEvent{
+					_ = usageRepo.AppendUsageEvent(state.UsageEvent{
 						Operation:    "ingest.review",
 						Provider:     reviewUsage.Metadata.Provider,
 						Model:        reviewUsage.Metadata.Model,
@@ -224,14 +239,14 @@ func runKnowledgePipeline(files []string, class string, provider plugins.AIProvi
 	}
 
 	emit(ProgressEvent{Label: "Persist knowledge", Detail: "sections index"})
-	if err := state.SaveSectionIndex(sectionIndex); err != nil {
+	if err := knowledgeRepo.SaveSectionIndex(sectionIndex); err != nil {
 		emit(ProgressEvent{Label: "Persist knowledge", Detail: "sections index", Done: true, Err: err})
 		return result, fmt.Errorf("save section index: %w", err)
 	}
 	emit(ProgressEvent{Label: "Persist knowledge", Detail: "sections index", Done: true})
 
 	emit(ProgressEvent{Label: "Persist knowledge", Detail: "components index"})
-	if err := state.SaveComponentIndex(componentIndex); err != nil {
+	if err := knowledgeRepo.SaveComponentIndex(componentIndex); err != nil {
 		emit(ProgressEvent{Label: "Persist knowledge", Detail: "components index", Done: true, Err: err})
 		return result, fmt.Errorf("save component index: %w", err)
 	}
@@ -499,7 +514,7 @@ func materializeKnowledgeUnits(sectionData composedSection, note state.Note, cla
 	return section, components
 }
 
-func attachEmbeddings(section *state.Section, components []state.Component, provider plugins.EmbeddingProvider, emit func(ProgressEvent), ingestRunID string, cfg *config.Config) []state.Component {
+func attachEmbeddings(section *state.Section, components []state.Component, provider plugins.EmbeddingProvider, emit func(ProgressEvent), ingestRunID string, cfg *config.Config, usageRepo repository.UsageRepository) []state.Component {
 	if section == nil || provider == nil || provider.Disabled() {
 		emit(ProgressEvent{
 			Label:  "Embed section",
@@ -522,7 +537,7 @@ func attachEmbeddings(section *state.Section, components []state.Component, prov
 	}
 	emit(ProgressEvent{Label: "Embed section", Detail: section.Title, Done: true})
 
-	_ = state.AppendUsageEvent(state.UsageEvent{
+	_ = usageRepo.AppendUsageEvent(state.UsageEvent{
 		Operation:    "ingest.embed.section",
 		Provider:     usage.Metadata.Provider,
 		Model:        usage.Metadata.Model,
@@ -558,7 +573,7 @@ func attachEmbeddings(section *state.Section, components []state.Component, prov
 	}
 	emit(ProgressEvent{Label: "Embed components", Detail: fmt.Sprintf("%d item(s)", len(componentTexts)), Done: true})
 
-	_ = state.AppendUsageEvent(state.UsageEvent{
+	_ = usageRepo.AppendUsageEvent(state.UsageEvent{
 		Operation:    "ingest.embed.component",
 		Provider:     componentUsage.Metadata.Provider,
 		Model:        componentUsage.Metadata.Model,
@@ -703,4 +718,11 @@ func estimateTokenUsage(input, output string) plugins.TokenUsage {
 		OutputTokens: outputTokens,
 		TotalTokens:  inputTokens + outputTokens,
 	}
+}
+
+func resolveStore(store repository.Store) repository.Store {
+	if store == nil {
+		return repository.NewFilesystemStore()
+	}
+	return store
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/plugins"
 )
 
@@ -30,11 +31,30 @@ type StreamEvent struct {
 // AskStream sends a prompt and emits the final reply in chunks.
 // Tool-aware chat resolves any intermediate tool calls before chunking output.
 func AskStream(provider plugins.AIProvider, cfg *config.Config, className, prompt string, onEvent func(StreamEvent) error) error {
-	fullPrompt, err := buildPrompt(cfg, className, prompt)
+	return NewService(nil).AskStream(provider, cfg, className, prompt, onEvent)
+}
+
+// AskStreamWithMode sends a prompt and emits response events using the supplied mode.
+func AskStreamWithMode(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, onEvent func(StreamEvent) error) error {
+	return NewService(nil).AskStreamWithMode(provider, cfg, className, prompt, mode, onEvent)
+}
+
+// AskStreamWithStore is like AskStream but uses the provided storage abstraction.
+func AskStreamWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, store repository.Store, onEvent func(StreamEvent) error) error {
+	return NewService(store).AskStream(provider, cfg, className, prompt, onEvent)
+}
+
+// AskStreamWithStoreAndMode is like AskStreamWithStore but uses a mode override.
+func AskStreamWithStoreAndMode(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, onEvent func(StreamEvent) error) error {
+	return NewService(store).AskStreamWithMode(provider, cfg, className, prompt, mode, onEvent)
+}
+
+func askStreamWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, onEvent func(StreamEvent) error) error {
+	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store)
 	if err != nil {
 		return err
 	}
-	_, err = runAgent(provider, cfg, className, fullPrompt, onEvent)
+	_, err = runAgent(provider, cfg, className, fullPrompt, store, onEvent)
 	return err
 }
 

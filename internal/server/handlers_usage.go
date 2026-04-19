@@ -34,7 +34,7 @@ func (s *Server) handleUsageTotals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.Config()
-	totals, err := state.LoadUsageTotalsWithPricing(cfg, filter)
+	totals, err := s.Store().Usage().LoadUsageTotalsWithPricing(cfg, filter)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load usage: "+err.Error())
 		return
@@ -49,7 +49,7 @@ func (s *Server) handleUsageLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ledger, err := state.LoadUsageLedger()
+	ledger, err := s.Store().Usage().LoadUsageLedger()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load ledger: "+err.Error())
 		return

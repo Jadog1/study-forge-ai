@@ -14,6 +14,7 @@ import (
 
 	classpkg "github.com/studyforge/study-agent/internal/class"
 	"github.com/studyforge/study-agent/internal/config"
+	"github.com/studyforge/study-agent/internal/repository"
 	"github.com/studyforge/study-agent/internal/sfq"
 	"github.com/studyforge/study-agent/internal/state"
 	"github.com/studyforge/study-agent/plugins"
@@ -77,16 +78,28 @@ type QuizProviderOverrides struct {
 // NewQuiz generates a new adaptive quiz for class using the three-layer
 // pipeline and returns the saved quiz and its file path.
 func NewQuiz(class string, opts QuizOptions, provider plugins.AIProvider, cfg *config.Config) (*state.Quiz, string, error) {
-	return NewQuizStream(class, opts, provider, cfg, nil)
+	return NewQuizWithStore(class, opts, provider, cfg, nil)
 }
 
 // NewQuizStream is like NewQuiz but calls onProgress with agent step events
 // so callers can show live tool-call feedback in the UI.
 func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, cfg *config.Config, onProgress func(ProgressEvent)) (*state.Quiz, string, error) {
+	return NewQuizStreamWithStore(class, opts, provider, cfg, nil, onProgress)
+}
+
+// NewQuizWithStore generates a new adaptive quiz using the provided store.
+func NewQuizWithStore(class string, opts QuizOptions, provider plugins.AIProvider, cfg *config.Config, store repository.Store) (*state.Quiz, string, error) {
+	return NewQuizStreamWithStore(class, opts, provider, cfg, store, nil)
+}
+
+// NewQuizStreamWithStore is like NewQuizStream but reads persisted data from
+// the provided repository store.
+func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIProvider, cfg *config.Config, store repository.Store, onProgress func(ProgressEvent)) (*state.Quiz, string, error) {
 	recentSignals := recentQuizSignals{
 		ComponentLastSeen: make(map[string]time.Time),
 		QuestionKeys:      make(map[string]bool),
 	}
+	resolvedStore := resolveStore(store)
 
 	assessmentKind := classpkg.NormalizeContextProfile(opts.AssessmentKind)
 	isFocused := assessmentKind == "focused"
@@ -126,11 +139,11 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 	}
 
 	// ── 1. Score components ──────────────────────────────────────────────────
-	secIdx, err := state.LoadSectionIndex()
+	secIdx, err := resolvedStore.Knowledge().LoadSectionIndex()
 	if err != nil {
 		return nil, "", fmt.Errorf("load section index: %w", err)
 	}
-	cmpIdx, err := state.LoadComponentIndex()
+	cmpIdx, err := resolvedStore.Knowledge().LoadComponentIndex()
 	if err != nil {
 		return nil, "", fmt.Errorf("load component index: %w", err)
 	}
@@ -204,9 +217,9 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 			orcProvider = opts.ProviderOverrides.Orchestrator
 		}
 		if isFocused {
-			directives, err = runFocusedOrchestratorAgent(class, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
+			directives, err = runFocusedOrchestratorAgent(class, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, resolvedStore.Usage(), onProgress)
 		} else {
-			directives, err = runOrchestratorAgent(class, assessmentKind, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, onProgress)
+			directives, err = runOrchestratorAgent(class, assessmentKind, classProfileContext, candidates, opts.Count, opts.TypePreference, orcProvider, cfg, resolvedStore.Usage(), onProgress)
 		}
 		if err != nil {
 			return nil, "", fmt.Errorf("orchestrator: %w", err)
@@ -257,7 +270,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 		if strings.TrimSpace(d.SectionTitle) == "" {
 			d.SectionTitle = cs.Section.Title
 		}
-		sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, d, cs, cmpProvider, cfg, onProgress)
+		sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, d, cs, cmpProvider, cfg, resolvedStore.Usage(), onProgress)
 		if agentErr != nil {
 			if onProgress != nil {
 				onProgress(ProgressEvent{Label: "Component " + d.ComponentID, Detail: agentErr.Error(), Done: true, Err: agentErr})
@@ -289,7 +302,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 				QuestionTypes: []string{opts.TypePreference},
 				Angle:         "reinforce understanding",
 			}
-			sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, fallbackDir, cs, cmpProvider, cfg, onProgress)
+			sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, fallbackDir, cs, cmpProvider, cfg, resolvedStore.Usage(), onProgress)
 			if agentErr != nil {
 				if onProgress != nil {
 					onProgress(ProgressEvent{Label: "Fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})
@@ -328,7 +341,7 @@ func NewQuizStream(class string, opts QuizOptions, provider plugins.AIProvider, 
 				QuestionTypes: []string{opts.TypePreference},
 				Angle:         "novel scenario with different wording",
 			}
-			sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, extraDir, cs, cmpProvider, cfg, onProgress)
+			sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, extraDir, cs, cmpProvider, cfg, resolvedStore.Usage(), onProgress)
 			if agentErr != nil {
 				if onProgress != nil {
 					onProgress(ProgressEvent{Label: "Diversity fallback " + cs.Component.ID, Detail: agentErr.Error(), Done: true, Err: agentErr})

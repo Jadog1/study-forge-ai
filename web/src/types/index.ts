@@ -233,6 +233,8 @@ export interface SyncReport {
   unmapped_answers: number;
 }
 
+export type ChatMode = 'standard' | 'socratic' | 'explain_back';
+
 export interface ChatStreamEvent {
   type: 'chunk' | 'action-start' | 'action-done' | 'done' | 'error';
   text?: string;

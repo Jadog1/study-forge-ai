@@ -12,7 +12,7 @@ func (s *Server) handleListSections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx, err := state.LoadSectionIndex()
+	idx, err := s.Store().Knowledge().LoadSectionIndex()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load sections: "+err.Error())
 		return
@@ -34,7 +34,7 @@ func (s *Server) handleListComponents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx, err := state.LoadComponentIndex()
+	idx, err := s.Store().Knowledge().LoadComponentIndex()
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "load components: "+err.Error())
 		return
