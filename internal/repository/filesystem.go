@@ -16,6 +16,7 @@ func NewFilesystemStore() *FilesystemStore {
 
 func (s *FilesystemStore) Knowledge() KnowledgeRepository { return filesystemKnowledgeRepo{} }
 func (s *FilesystemStore) Notes() NotesRepository         { return filesystemNotesRepo{} }
+func (s *FilesystemStore) Chat() ChatRepository           { return filesystemChatRepo{} }
 func (s *FilesystemStore) Usage() UsageRepository         { return filesystemUsageRepo{} }
 func (s *FilesystemStore) QuizAttempts() QuizAttemptRepository {
 	return filesystemQuizAttemptRepo{}
@@ -59,6 +60,20 @@ func (filesystemNotesRepo) LoadNotesIndex() (*state.NotesIndex, error) {
 
 func (filesystemNotesRepo) SaveNotesIndex(idx *state.NotesIndex) error {
 	return state.SaveNotesIndex(idx)
+}
+
+type filesystemChatRepo struct{}
+
+func (filesystemChatRepo) LoadLatestChatSession() (*state.ChatSession, error) {
+	return state.LoadLatestChatSession()
+}
+
+func (filesystemChatRepo) SaveLatestChatSession(session *state.ChatSession) error {
+	return state.SaveLatestChatSession(session)
+}
+
+func (filesystemChatRepo) ClearLatestChatSession() error {
+	return state.ClearLatestChatSession()
 }
 
 type filesystemUsageRepo struct{}

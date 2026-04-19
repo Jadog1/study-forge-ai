@@ -251,6 +251,13 @@ export interface ChatMessage {
   streaming?: boolean;
 }
 
+export interface LatestChatSession {
+  class?: string;
+  mode?: ChatMode;
+  messages: Array<Pick<ChatMessage, 'role' | 'content'>>;
+  updated_at?: string;
+}
+
 export interface ChatAction {
   label: string;
   detail?: string;

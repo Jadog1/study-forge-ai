@@ -49,8 +49,8 @@ func AskStreamWithStoreAndMode(provider plugins.AIProvider, cfg *config.Config, 
 	return NewService(store).AskStreamWithMode(provider, cfg, className, prompt, mode, onEvent)
 }
 
-func askStreamWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, onEvent func(StreamEvent) error) error {
-	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store)
+func askStreamWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage, onEvent func(StreamEvent) error) error {
+	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store, history)
 	if err != nil {
 		return err
 	}
@@ -178,6 +178,7 @@ func streamProviderResponseWith(prompt string, onEvent func(StreamEvent) error, 
 	var full strings.Builder
 	var pending strings.Builder
 	released := false
+	const minBufferBeforeRelease = 100 // Require at least 100 chars before streaming
 
 	err := streamFn(func(part string) error {
 		if part == "" {
@@ -190,12 +191,25 @@ func streamProviderResponseWith(prompt string, onEvent func(StreamEvent) error, 
 		}
 
 		pending.WriteString(part)
-		if looksLikeToolCallPrefix(pending.String()) {
+		buffered := pending.String()
+
+		// Never release if tool call appears anywhere in buffer
+		if strings.Contains(buffered, toolCallStartTag) {
+			return nil
+		}
+
+		// Keep buffering if it looks like a tool call might be starting
+		if looksLikeToolCallPrefix(buffered) {
+			return nil
+		}
+
+		// Wait for minimum buffer size before releasing to reduce risk of
+		// emitting preamble prose before a tool call that appears later
+		if len(buffered) < minBufferBeforeRelease {
 			return nil
 		}
 
 		released = true
-		buffered := pending.String()
 		pending.Reset()
 		return onEvent(StreamEvent{Kind: StreamEventChunk, Text: buffered})
 	})
@@ -204,7 +218,8 @@ func streamProviderResponseWith(prompt string, onEvent func(StreamEvent) error, 
 	}
 
 	resp := full.String()
-	if !released && !isToolCallResponse(resp) {
+	// Only emit buffered text if the complete response doesn't contain a tool call
+	if !released && !strings.Contains(resp, toolCallStartTag) {
 		buffered := pending.String()
 		if buffered != "" {
 			if err := onEvent(StreamEvent{Kind: StreamEventChunk, Text: buffered}); err != nil {

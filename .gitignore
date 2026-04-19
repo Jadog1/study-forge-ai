@@ -16,3 +16,5 @@ vendor/
 # OS artefacts
 .DS_Store
 Thumbs.db
+
+migrate-class.exe

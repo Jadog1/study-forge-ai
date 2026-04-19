@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Send, Loader2, MessageSquare, ChevronDown, PlusCircle, AlertTriangle } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { streamChat, fetchClasses } from '../api/client';
+import { streamChat, fetchClasses, fetchLatestChat, clearLatestChat } from '../api/client';
 import { EmptyState } from '../components/EmptyState';
-import type { ChatAction, ChatMessage, ChatMode, ChatStreamEvent } from '../types';
+import type { ChatAction, ChatMessage, ChatMode, ChatStreamEvent, LatestChatSession } from '../types';
 
 const CHAT_MODE_OPTIONS: Array<{ value: ChatMode; label: string }> = [
   { value: 'standard', label: 'Standard' },
@@ -16,6 +16,7 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [classes, setClasses] = useState<string[]>([]);
   const [selectedClass, setSelectedClass] = useState('');
   const [mode, setMode] = useState<ChatMode>('standard');
@@ -23,12 +24,53 @@ export function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    fetchClasses()
-      .then((c) => {
-        setClasses(c);
-        if (c.length > 0) setSelectedClass(c[0]);
+    let cancelled = false;
+    Promise.all([
+      fetchClasses().catch((): string[] => []),
+      fetchLatestChat().catch((): LatestChatSession | null => null),
+    ])
+      .then(([classList, latest]) => {
+        if (cancelled) return;
+
+        const restoredClass = latest?.class?.trim() ?? '';
+        const mergedClasses = restoredClass && !classList.includes(restoredClass)
+          ? [restoredClass, ...classList]
+          : classList;
+
+        setClasses(mergedClasses);
+
+        const restored = (latest?.messages ?? [])
+          .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+          .map((m) => ({
+            id: crypto.randomUUID(),
+            role: m.role,
+            content: m.content,
+            streaming: false,
+            actions: m.role === 'assistant' ? [] : undefined,
+          })) as ChatMessage[];
+
+        if (restored.length > 0) {
+          setMessages(restored);
+        }
+
+        if (restoredClass) {
+          setSelectedClass(restoredClass);
+        } else if (mergedClasses.length > 0) {
+          setSelectedClass(mergedClasses[0]);
+        }
+
+        const restoredMode = latest?.mode;
+        if (restoredMode === 'standard' || restoredMode === 'socratic' || restoredMode === 'explain_back') {
+          setMode(restoredMode);
+        }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setInitialLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -135,6 +177,7 @@ export function ChatPage() {
     if (streaming) return;
     setMessages([]);
     setInput('');
+    clearLatestChat().catch(() => {});
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       textareaRef.current.focus();
@@ -194,14 +237,21 @@ export function ChatPage() {
         <div className="mx-auto flex max-w-3xl items-start gap-2 text-xs text-amber-800">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p>
-            Chats are not saved yet. Starting a new chat or refreshing the page will clear your conversation history.
+            The most recent chat is saved and restored after refresh or app restart.
           </p>
         </div>
       </div>
 
       {/* Message area */}
       <div className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
+        {initialLoading ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="flex flex-col items-center gap-3 text-slate-400">
+              <Loader2 className="h-6 w-6 animate-spin" />
+              <p className="text-sm">Loading chat history…</p>
+            </div>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <EmptyState
               icon={MessageSquare}
@@ -296,6 +346,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {/* Content */}
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+        ) : message.streaming && !message.content ? (
+          <div className="flex items-center gap-1 py-1">
+            <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.3s]" />
+            <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce [animation-delay:-0.15s]" />
+            <span className="h-2 w-2 rounded-full bg-slate-400 animate-bounce" />
+          </div>
         ) : (
           <div className="prose prose-sm prose-slate max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-slate-800 prose-pre:text-slate-100 prose-code:text-indigo-600 prose-code:before:content-none prose-code:after:content-none prose-table:text-sm">
             <Markdown remarkPlugins={[remarkGfm]}>{stripToolCalls(message.content)}</Markdown>

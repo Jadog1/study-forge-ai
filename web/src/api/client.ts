@@ -10,6 +10,7 @@ import type {
   GenerateQuizParams,
   IngestParams,
   IngestSSEEvent,
+  LatestChatSession,
   QuizDashboardSnapshot,
   Section,
   SyncReport,
@@ -196,6 +197,14 @@ export function streamChat(
   return streamSSE('/chat', { message, class: className, mode }, onEvent);
 }
 
+export function fetchLatestChat(): Promise<LatestChatSession> {
+  return fetchJSON<LatestChatSession>('/chat/latest');
+}
+
+export function clearLatestChat(): Promise<void> {
+  return deleteJSON<void>('/chat/latest');
+}
+
 export function fetchSections(): Promise<Section[]> {
   return fetchJSON<{ sections: Section[] }>('/knowledge/sections').then(r => r.sections ?? []);
 }
@@ -316,6 +325,8 @@ export const api = {
   updateConfig: (config: Partial<Config>) => putJSON<void>('/config', config),
   streamChat: (message: string, className: string, onEvent: (e: ChatStreamEvent) => void) =>
     streamSSE('/chat', { message, class: className }, onEvent),
+  fetchLatestChat: () => fetchJSON<LatestChatSession>('/chat/latest'),
+  clearLatestChat: () => deleteJSON<void>('/chat/latest'),
   fetchSections: () => fetchJSON<{ sections: Section[] }>('/knowledge/sections').then(r => r.sections ?? []),
   fetchComponents: () => fetchJSON<{ components: Component[] }>('/knowledge/components').then(r => r.components ?? []),
   fetchUsageTotals: (filter?: UsageFilter) => fetchUsageTotals(filter),

@@ -16,6 +16,7 @@ type testStore struct {
 
 func (s testStore) Knowledge() repository.KnowledgeRepository      { return s.knowledge }
 func (s testStore) Notes() repository.NotesRepository              { return s.notes }
+func (s testStore) Chat() repository.ChatRepository                { return noopChatRepo{} }
 func (s testStore) Usage() repository.UsageRepository              { return noopUsageRepo{} }
 func (s testStore) QuizAttempts() repository.QuizAttemptRepository { return noopQuizRepo{} }
 func (s testStore) Maintenance() repository.MaintenanceRepository  { return noopMaintenanceRepo{} }
@@ -45,6 +46,14 @@ type testNotesRepo struct{}
 
 func (testNotesRepo) LoadNotesIndex() (*state.NotesIndex, error) { return &state.NotesIndex{}, nil }
 func (testNotesRepo) SaveNotesIndex(idx *state.NotesIndex) error { return nil }
+
+type noopChatRepo struct{}
+
+func (noopChatRepo) LoadLatestChatSession() (*state.ChatSession, error) { return nil, nil }
+func (noopChatRepo) SaveLatestChatSession(session *state.ChatSession) error {
+	return nil
+}
+func (noopChatRepo) ClearLatestChatSession() error { return nil }
 
 type noopUsageRepo struct{}
 

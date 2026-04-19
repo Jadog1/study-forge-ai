@@ -9,6 +9,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Chat (SSE streaming)
 	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/chat/latest", s.routeLatestChat)
 
 	// Knowledge
 	mux.HandleFunc("/api/knowledge/sections", s.handleListSections)
@@ -39,6 +40,17 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// SFQ meta
 	mux.HandleFunc("/api/sfq/question-types", s.handleQuestionTypes)
+}
+
+func (s *Server) routeLatestChat(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetLatestChat(w, r)
+	case http.MethodDelete:
+		s.handleClearLatestChat(w, r)
+	default:
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // routeConfig dispatches GET / PUT to the config handlers.

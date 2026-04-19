@@ -10,6 +10,7 @@ import (
 type Store interface {
 	Knowledge() KnowledgeRepository
 	Notes() NotesRepository
+	Chat() ChatRepository
 	Usage() UsageRepository
 	QuizAttempts() QuizAttemptRepository
 	Maintenance() MaintenanceRepository
@@ -32,6 +33,13 @@ type KnowledgeRepository interface {
 type NotesRepository interface {
 	LoadNotesIndex() (*state.NotesIndex, error)
 	SaveNotesIndex(idx *state.NotesIndex) error
+}
+
+// ChatRepository persists the latest chat session for resume-on-refresh UX.
+type ChatRepository interface {
+	LoadLatestChatSession() (*state.ChatSession, error)
+	SaveLatestChatSession(session *state.ChatSession) error
+	ClearLatestChatSession() error
 }
 
 // UsageRepository persists usage ledgers and computed totals.

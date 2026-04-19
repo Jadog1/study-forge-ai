@@ -39,8 +39,8 @@ func AskWithStoreAndMode(provider plugins.AIProvider, cfg *config.Config, classN
 	return NewService(store).AskWithMode(provider, cfg, className, prompt, mode)
 }
 
-func askWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store) (string, error) {
-	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store)
+func askWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage) (string, error) {
+	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store, history)
 	if err != nil {
 		return "", err
 	}
@@ -52,7 +52,7 @@ func askWithStore(provider plugins.AIProvider, cfg *config.Config, className, pr
 	return resp, nil
 }
 
-func buildPromptWithStore(cfg *config.Config, className, prompt string, mode Mode, store repository.Store) (string, error) {
+func buildPromptWithStore(cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage) (string, error) {
 	sections := []string{agentInstructions(mode, className)}
 	if className != "" {
 		sections = append(sections, "Selected class:\n"+className)
@@ -65,12 +65,32 @@ func buildPromptWithStore(cfg *config.Config, className, prompt string, mode Mod
 		}
 	}
 
-	noteText, err := buildNoteContext(className, prompt, store)
-	if err != nil {
-		return "", err
+	// Only search for notes if this is a fresh conversation or no history exists
+	// Otherwise, rely on the history for context and only search when agent requests it via tool
+	if len(history) == 0 {
+		noteText, err := buildNoteContext(className, prompt, store)
+		if err != nil {
+			return "", err
+		}
+		if noteText != "" {
+			sections = append(sections, "Relevant ingested notes:\n"+noteText)
+		}
 	}
-	if noteText != "" {
-		sections = append(sections, "Relevant ingested notes:\n"+noteText)
+
+	// Include conversation history
+	if len(history) > 0 {
+		var historyBuilder strings.Builder
+		historyBuilder.WriteString("Conversation history:\n")
+		for _, msg := range history {
+			if msg.Role == "user" {
+				historyBuilder.WriteString("User: ")
+			} else {
+				historyBuilder.WriteString("Assistant: ")
+			}
+			historyBuilder.WriteString(msg.Content)
+			historyBuilder.WriteString("\n\n")
+		}
+		sections = append(sections, strings.TrimSpace(historyBuilder.String()))
 	}
 
 	sections = append(sections, "User request:\n"+prompt)
@@ -190,7 +210,11 @@ When a user asks for specific sections/components or source files (for example, 
 Mode-specific guidance:
 ` + modeInstructions(mode) + `
 
-When you want a tool, respond with ONLY this XML block and nothing else:
+CRITICAL tool-use rules:
+- When you need a tool, respond with ONLY the XML block below—no preamble, no questions, no commentary.
+- Do NOT add any text before or after the tool_call block.
+- In Socratic/ExplainBack modes: gather information via tools FIRST, then ask guiding questions using the retrieved context.
+- Tool call format:
 <tool_call>
 {"name":"search_notes","arguments":{"query":"your query","class":"optional class","limit":5}}
 </tool_call>
