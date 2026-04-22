@@ -1109,6 +1109,9 @@ function QuizGenerationPanel({
   const [error, setError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [useOrchestratorPlan, setUseOrchestratorPlan] = useState(
+    selection.sourcePaths.size > 1 || selectionCount(selection) > 1,
+  );
 
   useEffect(() => {
     api.fetchQuestionTypes().then(setQuestionTypes).catch(() => {});
@@ -1162,13 +1165,21 @@ function QuizGenerationPanel({
     setError(null);
     try {
       const directives = buildDirectives();
+      const useScopedOrchestrator = useOrchestratorPlan && resolvedComponents.length > 1;
       await api.generateQuiz(
         {
           class: targetClass,
           count: numQuestions,
           assessment_type: assessmentType,
           question_type: questionType,
-          directives: directives.length > 0 ? directives : undefined,
+          use_orchestrator: useScopedOrchestrator,
+          candidate_component_ids: useScopedOrchestrator
+            ? resolvedComponents.map((c) => c.id)
+            : undefined,
+          directives:
+            !useScopedOrchestrator && directives.length > 0
+              ? directives
+              : undefined,
         },
         (e) => setEvents((prev) => [...prev, e]),
       );
@@ -1277,6 +1288,23 @@ function QuizGenerationPanel({
               )}
             </button>
           </div>
+        </div>
+
+        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              checked={useOrchestratorPlan}
+              onChange={(e) => setUseOrchestratorPlan(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="text-xs text-slate-600">
+              Use orchestrator planning within this selection scope.
+              <span className="ml-1 text-slate-500">
+                Best for multiple sources/components where you want smarter coverage across selected notes.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Expandable details */}

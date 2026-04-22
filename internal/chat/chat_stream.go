@@ -50,37 +50,72 @@ func AskStreamWithStoreAndMode(provider plugins.AIProvider, cfg *config.Config, 
 }
 
 func askStreamWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage, onEvent func(StreamEvent) error) error {
-	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store, history)
+	request, err := buildConversationWithStore(cfg, className, prompt, mode, store, history)
 	if err != nil {
 		return err
 	}
-	_, err = runAgent(provider, cfg, className, fullPrompt, store, onEvent)
+	_, err = runAgent(provider, cfg, className, request, store, onEvent)
 	return err
 }
 
-func generateAgentResponse(provider plugins.AIProvider, prompt string, onEvent func(StreamEvent) error) (string, bool, plugins.GenerateResult, error) {
+func generateAgentResponse(provider plugins.AIProvider, request plugins.ChatCompletionRequest, onEvent func(StreamEvent) error) (string, bool, plugins.GenerateResult, error) {
 	if onEvent == nil {
-		text, result, err := chatGenerateWithMetadata(provider, prompt)
+		text, result, err := chatGenerateWithMetadata(provider, request)
 		return text, false, result, err
 	}
 
-	streamer, ok := provider.(plugins.StreamingAIProvider)
-	if !ok {
-		text, result, err := chatGenerateWithMetadata(provider, prompt)
-		return text, false, result, err
-	}
-	if usageStreamer, ok := provider.(plugins.StreamingUsageAwareAIProvider); ok {
-		result, err := streamProviderResponseWithMetadata(usageStreamer, prompt, onEvent)
+	if usageStreamer, ok := provider.(plugins.StreamingChatUsageAwareAIProvider); ok {
+		result, err := usageStreamer.StreamGenerateChatWithMetadata(request, func(part string) error {
+			return onEvent(StreamEvent{Kind: StreamEventChunk, Text: part})
+		})
 		if err != nil {
 			return "", true, plugins.GenerateResult{}, err
 		}
 		return result.Text, true, result, nil
 	}
 
-	resp, err := streamProviderResponse(streamer, prompt, onEvent)
+	if streamer, ok := provider.(plugins.StreamingChatAIProvider); ok {
+		resp, err := streamProviderChatResponse(streamer, request, onEvent)
+		if err != nil {
+			return "", true, plugins.GenerateResult{}, err
+		}
+		requestText := renderConversationAsPrompt(request)
+		inputTokens := len(strings.Fields(requestText))
+		outputTokens := len(strings.Fields(resp))
+		result := plugins.GenerateResult{
+			Text: resp,
+			Usage: plugins.TokenUsage{
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+				TotalTokens:  inputTokens + outputTokens,
+			},
+			Metadata: plugins.CallMetadata{
+				Provider: provider.Name(),
+				Model:    provider.Model(),
+				At:       time.Now().UTC(),
+			},
+		}
+		return resp, true, result, nil
+	}
+
+	streamer, ok := provider.(plugins.StreamingAIProvider)
+	if !ok {
+		text, result, err := chatGenerateWithMetadata(provider, request)
+		return text, false, result, err
+	}
+	if usageStreamer, ok := provider.(plugins.StreamingUsageAwareAIProvider); ok {
+		result, err := streamProviderResponseWithMetadata(usageStreamer, request, onEvent)
+		if err != nil {
+			return "", true, plugins.GenerateResult{}, err
+		}
+		return result.Text, true, result, nil
+	}
+
+	resp, err := streamProviderResponse(streamer, request, onEvent)
 	if err != nil {
 		return "", true, plugins.GenerateResult{}, err
 	}
+	prompt := renderConversationAsPrompt(request)
 	inputTokens := len(strings.Fields(prompt))
 	outputTokens := len(strings.Fields(resp))
 	result := plugins.GenerateResult{
@@ -99,7 +134,44 @@ func generateAgentResponse(provider plugins.AIProvider, prompt string, onEvent f
 	return resp, true, result, nil
 }
 
-func chatGenerateWithMetadata(provider plugins.AIProvider, prompt string) (string, plugins.GenerateResult, error) {
+
+func chatGenerateWithMetadata(provider plugins.AIProvider, request plugins.ChatCompletionRequest) (string, plugins.GenerateResult, error) {
+	if usageAware, ok := provider.(plugins.ChatUsageAwareAIProvider); ok {
+		result, err := usageAware.GenerateChatWithMetadata(request)
+		if err != nil {
+			return "", plugins.GenerateResult{}, err
+		}
+		if result.Metadata.At.IsZero() {
+			result.Metadata.At = time.Now().UTC()
+		}
+		if result.Metadata.Provider == "" {
+			result.Metadata.Provider = provider.Name()
+		}
+		return result.Text, result, nil
+	}
+	if chatProvider, ok := provider.(plugins.ChatAIProvider); ok {
+		text, err := chatProvider.GenerateChat(request)
+		if err != nil {
+			return "", plugins.GenerateResult{}, err
+		}
+		prompt := renderConversationAsPrompt(request)
+		inputTokens := len(strings.Fields(prompt))
+		outputTokens := len(strings.Fields(text))
+		return text, plugins.GenerateResult{
+			Text: text,
+			Usage: plugins.TokenUsage{
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+				TotalTokens:  inputTokens + outputTokens,
+			},
+			Metadata: plugins.CallMetadata{
+				Provider: provider.Name(),
+				Model:    provider.Model(),
+				At:       time.Now().UTC(),
+			},
+		}, nil
+	}
+	prompt := renderConversationAsPrompt(request)
 	if usageAware, ok := provider.(plugins.UsageAwareAIProvider); ok {
 		result, err := usageAware.GenerateWithMetadata(prompt)
 		if err != nil {
@@ -134,13 +206,22 @@ func chatGenerateWithMetadata(provider plugins.AIProvider, prompt string) (strin
 	}, nil
 }
 
-func streamProviderResponse(provider plugins.StreamingAIProvider, prompt string, onEvent func(StreamEvent) error) (string, error) {
+
+func streamProviderChatResponse(provider plugins.StreamingChatAIProvider, request plugins.ChatCompletionRequest, onEvent func(StreamEvent) error) (string, error) {
+	return streamProviderResponseWith(renderConversationAsPrompt(request), onEvent, func(onChunk func(string) error) error {
+		return provider.StreamGenerateChat(request, onChunk)
+	})
+}
+
+func streamProviderResponse(provider plugins.StreamingAIProvider, request plugins.ChatCompletionRequest, onEvent func(StreamEvent) error) (string, error) {
+	prompt := renderConversationAsPrompt(request)
 	return streamProviderResponseWith(prompt, onEvent, func(onChunk func(string) error) error {
 		return provider.StreamGenerate(prompt, onChunk)
 	})
 }
 
-func streamProviderResponseWithMetadata(provider plugins.StreamingUsageAwareAIProvider, prompt string, onEvent func(StreamEvent) error) (plugins.GenerateResult, error) {
+func streamProviderResponseWithMetadata(provider plugins.StreamingUsageAwareAIProvider, request plugins.ChatCompletionRequest, onEvent func(StreamEvent) error) (plugins.GenerateResult, error) {
+	prompt := renderConversationAsPrompt(request)
 	var result plugins.GenerateResult
 	resp, err := streamProviderResponseWith(prompt, onEvent, func(onChunk func(string) error) error {
 		streamResult, streamErr := provider.StreamGenerateWithMetadata(prompt, onChunk)

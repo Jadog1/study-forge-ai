@@ -280,6 +280,8 @@ export interface GenerateQuizParams {
   question_type: string;
   focused_sections?: string[];
   tags?: string[];
+  use_orchestrator?: boolean;
+  candidate_component_ids?: string[];
   directives?: OrchestratorDirective[];
 }
 

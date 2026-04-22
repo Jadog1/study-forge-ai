@@ -1,6 +1,11 @@
 package chat
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/studyforge/study-agent/internal/state"
+	"github.com/studyforge/study-agent/plugins"
+)
 
 func TestNormalizeMode_DefaultAndAliases(t *testing.T) {
 	tests := []struct {
@@ -85,5 +90,46 @@ func TestToolQuizDirectives_RejectsInvalidShape(t *testing.T) {
 	}, 0, "multiple-choice")
 	if err == nil {
 		t.Fatal("expected invalid directives error, got nil")
+	}
+}
+
+func TestSanitizeAssistantResponse_TrimsFabricatedUserTurn(t *testing.T) {
+	input := "Helpful explanation here.\n\nUser: Can you give me context from my notes first?\n\nSure, here it is."
+	got := SanitizeAssistantResponse(input)
+	if got != "Helpful explanation here." {
+		t.Fatalf("SanitizeAssistantResponse()=%q", got)
+	}
+}
+
+func TestSanitizeHistory_TrimsAssistantAndSkipsUnknownRoles(t *testing.T) {
+	history := []state.ChatMessage{
+		{Role: "user", Content: "What is greenwashing?"},
+		{Role: "assistant", Content: "It is misleading ESG marketing.\n\nUser: tell me more"},
+		{Role: "tool", Content: "ignored"},
+	}
+
+	got := SanitizeHistory(history)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	if got[1].Content != "It is misleading ESG marketing." {
+		t.Fatalf("unexpected sanitized assistant content: %q", got[1].Content)
+	}
+}
+
+func TestRenderConversationAsPrompt_RendersSystemAndTurnsForFallback(t *testing.T) {
+	request := plugins.ChatCompletionRequest{
+		System: "System instructions",
+		Messages: []plugins.ChatMessage{
+			{Role: "user", Content: "First question"},
+			{Role: "assistant", Content: "First answer"},
+			{Role: "user", Content: "Second question"},
+		},
+	}
+
+	got := renderConversationAsPrompt(request)
+	want := "System instructions\n\nConversation:\nUser: First question\n\nAssistant: First answer\n\nUser: Second question"
+	if got != want {
+		t.Fatalf("renderConversationAsPrompt() mismatch\nwant:\n%s\n\ngot:\n%s", want, got)
 	}
 }

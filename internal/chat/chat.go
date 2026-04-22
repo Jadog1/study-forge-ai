@@ -40,49 +40,80 @@ func AskWithStoreAndMode(provider plugins.AIProvider, cfg *config.Config, classN
 }
 
 func askWithStore(provider plugins.AIProvider, cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage) (string, error) {
-	fullPrompt, err := buildPromptWithStore(cfg, className, prompt, mode, store, history)
+	request, err := buildConversationWithStore(cfg, className, prompt, mode, store, history)
 	if err != nil {
 		return "", err
 	}
 
-	resp, err := runAgent(provider, cfg, className, fullPrompt, store, nil)
+	resp, err := runAgent(provider, cfg, className, request, store, nil)
 	if err != nil {
 		return "", err
 	}
 	return resp, nil
 }
 
-func buildPromptWithStore(cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage) (string, error) {
-	sections := []string{agentInstructions(mode, className)}
+func buildConversationWithStore(cfg *config.Config, className, prompt string, mode Mode, store repository.Store, history []ChatMessage) (plugins.ChatCompletionRequest, error) {
+	systemSections := []string{agentInstructions(mode, className)}
 	if className != "" {
-		sections = append(sections, "Selected class:\n"+className)
+		systemSections = append(systemSections, "Selected class:\n"+className)
 		ctxText, err := buildClassContext(className)
 		if err != nil {
-			return "", err
+			return plugins.ChatCompletionRequest{}, err
 		}
 		if ctxText != "" {
-			sections = append(sections, "Class context:\n"+ctxText)
+			systemSections = append(systemSections, "Class context:\n"+ctxText)
 		}
 	}
+
+	sanitizedHistory := SanitizeHistory(history)
 
 	// Only search for notes if this is a fresh conversation or no history exists
 	// Otherwise, rely on the history for context and only search when agent requests it via tool
-	if len(history) == 0 {
+	if len(sanitizedHistory) == 0 {
 		noteText, err := buildNoteContext(className, prompt, store)
 		if err != nil {
-			return "", err
+			return plugins.ChatCompletionRequest{}, err
 		}
 		if noteText != "" {
-			sections = append(sections, "Relevant ingested notes:\n"+noteText)
+			systemSections = append(systemSections, "Relevant ingested notes:\n"+noteText)
 		}
 	}
 
-	// Include conversation history
-	if len(history) > 0 {
+	if cfg.CustomPromptContext != "" {
+		systemSections = append(systemSections, "Additional instructions:\n"+cfg.CustomPromptContext)
+	}
+
+	messages := make([]plugins.ChatMessage, 0, len(sanitizedHistory)+1)
+	for _, msg := range sanitizedHistory {
+		role := normalizeHistoryRole(msg.Role)
+		content := strings.TrimSpace(msg.Content)
+		if role == "" || content == "" {
+			continue
+		}
+		messages = append(messages, plugins.ChatMessage{Role: role, Content: content})
+	}
+	messages = append(messages, plugins.ChatMessage{Role: "user", Content: strings.TrimSpace(prompt)})
+
+	return plugins.ChatCompletionRequest{
+		System:   strings.Join(systemSections, "\n\n"),
+		Messages: messages,
+	}, nil
+}
+
+func renderConversationAsPrompt(request plugins.ChatCompletionRequest) string {
+	sections := make([]string, 0, len(request.Messages)+2)
+	if strings.TrimSpace(request.System) != "" {
+		sections = append(sections, request.System)
+	}
+	if len(request.Messages) > 0 {
 		var historyBuilder strings.Builder
-		historyBuilder.WriteString("Conversation history:\n")
-		for _, msg := range history {
-			if msg.Role == "user" {
+		historyBuilder.WriteString("Conversation:\n")
+		for _, msg := range request.Messages {
+			role := normalizeHistoryRole(msg.Role)
+			if role == "" || strings.TrimSpace(msg.Content) == "" {
+				continue
+			}
+			if role == "user" {
 				historyBuilder.WriteString("User: ")
 			} else {
 				historyBuilder.WriteString("Assistant: ")
@@ -92,14 +123,61 @@ func buildPromptWithStore(cfg *config.Config, className, prompt string, mode Mod
 		}
 		sections = append(sections, strings.TrimSpace(historyBuilder.String()))
 	}
+	return strings.Join(sections, "\n\n")
+}
 
-	sections = append(sections, "User request:\n"+prompt)
-
-	if cfg.CustomPromptContext != "" {
-		sections = append(sections, "Additional instructions:\n"+cfg.CustomPromptContext)
+// SanitizeAssistantResponse trims fabricated follow-up turns appended to an assistant reply.
+func SanitizeAssistantResponse(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
 	}
+	markers := []string{"\n\nUser:", "\nUser:", "\n\nHuman:", "\nHuman:"}
+	cut := -1
+	for _, marker := range markers {
+		idx := strings.Index(trimmed, marker)
+		if idx >= 0 && (cut == -1 || idx < cut) {
+			cut = idx
+		}
+	}
+	if cut >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:cut])
+	}
+	return trimmed
+}
 
-	return strings.Join(sections, "\n\n"), nil
+// SanitizeHistory removes malformed turns and trims assistant content that contains fabricated user continuations.
+func SanitizeHistory(history []ChatMessage) []ChatMessage {
+	if len(history) == 0 {
+		return nil
+	}
+	clean := make([]ChatMessage, 0, len(history))
+	for _, msg := range history {
+		role := normalizeHistoryRole(msg.Role)
+		if role == "" {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if role == "assistant" {
+			content = SanitizeAssistantResponse(content)
+		}
+		if content == "" {
+			continue
+		}
+		clean = append(clean, ChatMessage{Role: role, Content: content})
+	}
+	return clean
+}
+
+func normalizeHistoryRole(role string) string {
+	switch strings.TrimSpace(strings.ToLower(role)) {
+	case "user":
+		return "user"
+	case "assistant":
+		return "assistant"
+	default:
+		return ""
+	}
 }
 
 func buildClassContext(className string) (string, error) {
@@ -238,11 +316,14 @@ func modeInstructions(mode Mode) string {
 	}
 }
 
-func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt string, store repository.Store, onEvent func(StreamEvent) error) (string, error) {
-	transcript := prompt
+func runAgent(provider plugins.AIProvider, cfg *config.Config, className string, request plugins.ChatCompletionRequest, store repository.Store, onEvent func(StreamEvent) error) (string, error) {
+	baseRequest := request
+	messages := append([]plugins.ChatMessage{}, request.Messages...)
 	usageRepo := store.Usage()
 	for step := 0; step < 4; step++ {
-		resp, streamed, usage, err := generateAgentResponse(provider, transcript, onEvent)
+		current := baseRequest
+		current.Messages = append([]plugins.ChatMessage{}, messages...)
+		resp, streamed, usage, err := generateAgentResponse(provider, current, onEvent)
 		if err != nil {
 			return "", fmt.Errorf("chat generate: %w", err)
 		}
@@ -265,6 +346,7 @@ func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt
 			return "", fmt.Errorf("chat tool call: %w", err)
 		}
 		if !found {
+			resp = SanitizeAssistantResponse(resp)
 			if onEvent != nil && !streamed {
 				if err := emitChunked(resp, 256, onEvent); err != nil {
 					return "", err
@@ -298,11 +380,16 @@ func runAgent(provider plugins.AIProvider, cfg *config.Config, className, prompt
 			}
 		}
 
-		transcript += "\n\nAssistant requested tool:\n" + strings.TrimSpace(resp)
-		transcript += "\n\nTool result:\n" + result
-		transcript += "\n\nUse the tool result above. If more information is needed, call another tool. Otherwise answer the user directly."
+		messages = append(messages,
+			plugins.ChatMessage{Role: "assistant", Content: strings.TrimSpace(resp)},
+			plugins.ChatMessage{Role: "user", Content: formatToolResultMessage(result)},
+		)
 	}
 	return "", fmt.Errorf("chat agent exceeded tool-call limit")
+}
+
+func formatToolResultMessage(result string) string {
+	return "Tool result:\n" + result + "\n\nUse the tool result above. If more information is needed, call another tool. Otherwise answer the user directly."
 }
 
 func formatActionLabel(call *toolCall) string {

@@ -59,12 +59,29 @@ func (p *Provider) Generate(prompt string) (string, error) {
 	return result.Text, nil
 }
 
+// GenerateChat sends structured messages to Anthropic and returns the assistant reply.
+func (p *Provider) GenerateChat(request plugins.ChatCompletionRequest) (string, error) {
+	result, err := p.GenerateChatWithMetadata(request)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
+}
+
 // GenerateWithMetadata sends prompt to Anthropic and returns text with usage.
 func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
+	return p.GenerateChatWithMetadata(plugins.ChatCompletionRequest{
+		Messages: []plugins.ChatMessage{{Role: "user", Content: prompt}},
+	})
+}
+
+// GenerateChatWithMetadata sends structured messages to Anthropic and returns text with usage.
+func (p *Provider) GenerateChatWithMetadata(request plugins.ChatCompletionRequest) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(messagesRequest{
 		Model:       p.model,
 		MaxTokens:   defaultMaxTokens,
-		Messages:    []message{{Role: "user", Content: prompt}},
+		System:      strings.TrimSpace(request.System),
+		Messages:    toClaudeMessages(request.Messages),
 		Temperature: generationTemperature(),
 	})
 	if err != nil {
@@ -118,20 +135,34 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 
 // StreamGenerate sends prompt to Anthropic and emits buffered text chunks.
 func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) error {
+	return p.StreamGenerateChat(plugins.ChatCompletionRequest{
+		Messages: []plugins.ChatMessage{{Role: "user", Content: prompt}},
+	}, onChunk)
+}
+
+// StreamGenerateChat sends structured messages to Anthropic and emits buffered text chunks.
+func (p *Provider) StreamGenerateChat(request plugins.ChatCompletionRequest, onChunk func(string) error) error {
+	_, err := p.StreamGenerateChatWithMetadata(request, onChunk)
+	return err
+}
+
+// StreamGenerateChatWithMetadata streams structured messages and returns usage metadata.
+func (p *Provider) StreamGenerateChatWithMetadata(request plugins.ChatCompletionRequest, onChunk func(string) error) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(messagesRequest{
 		Model:       p.model,
 		MaxTokens:   defaultMaxTokens,
-		Messages:    []message{{Role: "user", Content: prompt}},
+		System:      strings.TrimSpace(request.System),
+		Messages:    toClaudeMessages(request.Messages),
 		Stream:      true,
 		Temperature: generationTemperature(),
 	})
 	if err != nil {
-		return fmt.Errorf("claude: marshal stream request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: marshal stream request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("claude: create stream request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: create stream request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", p.APIKey)
@@ -139,19 +170,23 @@ func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) err
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("claude: send stream request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: send stream request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		raw, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return fmt.Errorf("claude: read stream response: %w", readErr)
+			return plugins.GenerateResult{}, fmt.Errorf("claude: read stream response: %w", readErr)
 		}
-		return fmt.Errorf("claude: stream request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return plugins.GenerateResult{}, fmt.Errorf("claude: stream request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
 	buffer := claudeStreamBuffer{threshold: 48}
+	var full strings.Builder
+	var requestID string
+	var responseModel string
+	var usage plugins.TokenUsage
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -170,21 +205,68 @@ func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) err
 
 		var event messageStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			return fmt.Errorf("claude: parse stream response: %w", err)
+			return plugins.GenerateResult{}, fmt.Errorf("claude: parse stream response: %w", err)
 		}
 		if event.Error != nil {
-			return fmt.Errorf("claude: API error: %s", event.Error.Message)
+			return plugins.GenerateResult{}, fmt.Errorf("claude: API error: %s", event.Error.Message)
+		}
+		if event.Message != nil {
+			if event.Message.ID != "" {
+				requestID = event.Message.ID
+			}
+			if event.Message.Model != "" {
+				responseModel = event.Message.Model
+			}
+		}
+		if event.MessageDelta != nil {
+			if event.MessageDelta.StopReason == "" && event.Usage != nil {
+				usage.InputTokens = event.Usage.InputTokens
+				usage.OutputTokens = event.Usage.OutputTokens
+				usage.TotalTokens = event.Usage.InputTokens + event.Usage.OutputTokens
+			}
+		}
+		if event.Usage != nil {
+			usage.InputTokens = event.Usage.InputTokens
+			if event.Usage.OutputTokens > 0 {
+				usage.OutputTokens = event.Usage.OutputTokens
+			}
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 		if event.Type == "content_block_delta" && event.Delta.Text != "" {
+			full.WriteString(event.Delta.Text)
 			if err := buffer.Add(event.Delta.Text, onChunk); err != nil {
-				return err
+				return plugins.GenerateResult{}, err
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("claude: read stream: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("claude: read stream: %w", err)
 	}
-	return buffer.Flush(onChunk)
+	if err := buffer.Flush(onChunk); err != nil {
+		return plugins.GenerateResult{}, err
+	}
+	if usage.TotalTokens == 0 {
+		inputTokens := len(strings.Fields(renderClaudeRequestForUsage(request)))
+		outputTokens := len(strings.Fields(full.String()))
+		usage = plugins.TokenUsage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
+	}
+	return plugins.GenerateResult{
+		Text: full.String(),
+		Usage: usage,
+		Metadata: plugins.CallMetadata{
+			Provider:  p.Name(),
+			Model:     fallbackModel(responseModel, p.model),
+			RequestID: requestID,
+			At:        time.Now().UTC(),
+		},
+	}, nil
+}
+
+// StreamGenerateWithMetadata sends prompt to Anthropic and returns text with usage.
+func (p *Provider) StreamGenerateWithMetadata(prompt string, onChunk func(string) error) (plugins.GenerateResult, error) {
+	return p.StreamGenerateChatWithMetadata(plugins.ChatCompletionRequest{
+		Messages: []plugins.ChatMessage{{Role: "user", Content: prompt}},
+	}, onChunk)
 }
 
 // ── wire types ───────────────────────────────────────────────────────────────
@@ -197,6 +279,7 @@ type message struct {
 type messagesRequest struct {
 	Model       string    `json:"model"`
 	MaxTokens   int       `json:"max_tokens"`
+	System      string    `json:"system,omitempty"`
 	Messages    []message `json:"messages"`
 	Stream      bool      `json:"stream,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
@@ -228,14 +311,55 @@ func fallbackModel(values ...string) string {
 
 type messageStreamEvent struct {
 	Type  string `json:"type"`
+	Message *struct {
+		ID    string `json:"id,omitempty"`
+		Model string `json:"model,omitempty"`
+	} `json:"message,omitempty"`
+	MessageDelta *struct {
+		StopReason string `json:"stop_reason,omitempty"`
+	} `json:"message_delta,omitempty"`
 	Delta struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"delta"`
+	Usage *struct {
+		InputTokens  int `json:"input_tokens,omitempty"`
+		OutputTokens int `json:"output_tokens,omitempty"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func toClaudeMessages(messages []plugins.ChatMessage) []message {
+	result := make([]message, 0, len(messages))
+	for _, item := range messages {
+		role := strings.TrimSpace(item.Role)
+		if role == "system" || role == "" || strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		result = append(result, message{Role: role, Content: item.Content})
+	}
+	return result
+}
+
+func renderClaudeRequestForUsage(request plugins.ChatCompletionRequest) string {
+	var b strings.Builder
+	if strings.TrimSpace(request.System) != "" {
+		b.WriteString(request.System)
+		b.WriteString("\n\n")
+	}
+	for _, item := range request.Messages {
+		if strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		b.WriteString(item.Role)
+		b.WriteString(": ")
+		b.WriteString(item.Content)
+		b.WriteString("\n\n")
+	}
+	return b.String()
 }
 
 type claudeStreamBuffer struct {

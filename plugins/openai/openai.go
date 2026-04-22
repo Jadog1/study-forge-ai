@@ -58,11 +58,27 @@ func (p *Provider) Generate(prompt string) (string, error) {
 	return result.Text, nil
 }
 
+// GenerateChat sends structured messages to OpenAI and returns the assistant reply.
+func (p *Provider) GenerateChat(request plugins.ChatCompletionRequest) (string, error) {
+	result, err := p.GenerateChatWithMetadata(request)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
+}
+
 // GenerateWithMetadata sends prompt to OpenAI and returns text with model usage.
 func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, error) {
+	return p.GenerateChatWithMetadata(plugins.ChatCompletionRequest{
+		Messages: []plugins.ChatMessage{{Role: "user", Content: prompt}},
+	})
+}
+
+// GenerateChatWithMetadata sends structured messages to OpenAI and returns text with model usage.
+func (p *Provider) GenerateChatWithMetadata(request plugins.ChatCompletionRequest) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:       p.model,
-		Messages:    []message{{Role: "user", Content: prompt}},
+		Messages:    toOpenAIMessages(request),
 		Temperature: generationTemperature(),
 	})
 	if err != nil {
@@ -115,38 +131,55 @@ func (p *Provider) GenerateWithMetadata(prompt string) (plugins.GenerateResult, 
 
 // StreamGenerate sends prompt to OpenAI and emits buffered content chunks.
 func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) error {
+	return p.StreamGenerateChat(plugins.ChatCompletionRequest{
+		Messages: []plugins.ChatMessage{{Role: "user", Content: prompt}},
+	}, onChunk)
+}
+
+// StreamGenerateChat sends structured messages to OpenAI and emits buffered content chunks.
+func (p *Provider) StreamGenerateChat(request plugins.ChatCompletionRequest, onChunk func(string) error) error {
+	_, err := p.StreamGenerateChatWithMetadata(request, onChunk)
+	return err
+}
+
+// StreamGenerateChatWithMetadata streams structured messages and returns usage metadata.
+func (p *Provider) StreamGenerateChatWithMetadata(request plugins.ChatCompletionRequest, onChunk func(string) error) (plugins.GenerateResult, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:       p.model,
-		Messages:    []message{{Role: "user", Content: prompt}},
+		Messages:    toOpenAIMessages(request),
 		Stream:      true,
 		Temperature: generationTemperature(),
 	})
 	if err != nil {
-		return fmt.Errorf("openai: marshal stream request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: marshal stream request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("openai: create stream request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: create stream request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("openai: send stream request: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: send stream request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		raw, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return fmt.Errorf("openai: read stream response: %w", readErr)
+			return plugins.GenerateResult{}, fmt.Errorf("openai: read stream response: %w", readErr)
 		}
-		return fmt.Errorf("openai: stream request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return plugins.GenerateResult{}, fmt.Errorf("openai: stream request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
 	buffer := streamBuffer{threshold: 48}
+	var full strings.Builder
+	var requestID string
+	var responseModel string
+	var usage plugins.TokenUsage
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -162,22 +195,61 @@ func (p *Provider) StreamGenerate(prompt string, onChunk func(string) error) err
 
 		var chunk chatStreamResponse
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return fmt.Errorf("openai: parse stream response: %w", err)
+			return plugins.GenerateResult{}, fmt.Errorf("openai: parse stream response: %w", err)
 		}
 		if chunk.Error != nil {
-			return fmt.Errorf("openai: API error: %s", chunk.Error.Message)
+			return plugins.GenerateResult{}, fmt.Errorf("openai: API error: %s", chunk.Error.Message)
+		}
+		if chunk.ID != "" {
+			requestID = chunk.ID
+		}
+		if chunk.Model != "" {
+			responseModel = chunk.Model
+		}
+		if chunk.Usage != nil {
+			usage = plugins.TokenUsage{
+				InputTokens:  chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:  chunk.Usage.TotalTokens,
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		if err := buffer.Add(chunk.Choices[0].Delta.Content, onChunk); err != nil {
-			return err
+		content := chunk.Choices[0].Delta.Content
+		full.WriteString(content)
+		if err := buffer.Add(content, onChunk); err != nil {
+			return plugins.GenerateResult{}, err
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("openai: read stream: %w", err)
+		return plugins.GenerateResult{}, fmt.Errorf("openai: read stream: %w", err)
 	}
-	return buffer.Flush(onChunk)
+	if err := buffer.Flush(onChunk); err != nil {
+		return plugins.GenerateResult{}, err
+	}
+	if usage.TotalTokens == 0 {
+		inputTokens := len(strings.Fields(renderOpenAIRequestForUsage(request)))
+		outputTokens := len(strings.Fields(full.String()))
+		usage = plugins.TokenUsage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
+	}
+	return plugins.GenerateResult{
+		Text: full.String(),
+		Usage: usage,
+		Metadata: plugins.CallMetadata{
+			Provider:  p.Name(),
+			Model:     coalesceString(responseModel, p.model),
+			RequestID: requestID,
+			At:        time.Now().UTC(),
+		},
+	}, nil
+}
+
+// StreamGenerateWithMetadata streams prompt to OpenAI and returns usage metadata.
+func (p *Provider) StreamGenerateWithMetadata(prompt string, onChunk func(string) error) (plugins.GenerateResult, error) {
+	return p.StreamGenerateChatWithMetadata(plugins.ChatCompletionRequest{
+		Messages: []plugins.ChatMessage{{Role: "user", Content: prompt}},
+	}, onChunk)
 }
 
 // Embed sends one or more texts to OpenAI and returns embedding vectors.
@@ -285,14 +357,54 @@ type chatResponse struct {
 }
 
 type chatStreamResponse struct {
+	ID      string `json:"id,omitempty"`
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func toOpenAIMessages(request plugins.ChatCompletionRequest) []message {
+	messages := make([]message, 0, len(request.Messages)+1)
+	if strings.TrimSpace(request.System) != "" {
+		messages = append(messages, message{Role: "system", Content: request.System})
+	}
+	for _, item := range request.Messages {
+		role := strings.TrimSpace(item.Role)
+		if role == "" || strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		messages = append(messages, message{Role: role, Content: item.Content})
+	}
+	return messages
+}
+
+func renderOpenAIRequestForUsage(request plugins.ChatCompletionRequest) string {
+	var b strings.Builder
+	if strings.TrimSpace(request.System) != "" {
+		b.WriteString(request.System)
+		b.WriteString("\n\n")
+	}
+	for _, item := range request.Messages {
+		if strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		b.WriteString(item.Role)
+		b.WriteString(": ")
+		b.WriteString(item.Content)
+		b.WriteString("\n\n")
+	}
+	return b.String()
 }
 
 type embeddingsRequest struct {

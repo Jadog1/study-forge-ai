@@ -21,7 +21,9 @@ export function ChatPage() {
   const [selectedClass, setSelectedClass] = useState('');
   const [mode, setMode] = useState<ChatMode>('standard');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const userScrolledUpRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +76,38 @@ export function ChatPage() {
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (userScrolledUpRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // Re-enable auto-scroll when user scrolls back to the bottom
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom <= 80) {
+      userScrolledUpRef.current = false;
+    }
+  }, []);
+
+  // Immediately pause auto-scroll when user initiates a wheel or touch scroll
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const onUserScrollIntent = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distanceFromBottom > 80) {
+        userScrolledUpRef.current = true;
+      }
+    };
+    el.addEventListener('wheel', onUserScrollIntent, { passive: true });
+    el.addEventListener('touchstart', onUserScrollIntent, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', onUserScrollIntent);
+      el.removeEventListener('touchstart', onUserScrollIntent);
+    };
   }, []);
 
   useEffect(() => {
@@ -84,6 +117,9 @@ export function ChatPage() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || streaming) return;
+
+    // User sent a message — treat as "at bottom", resume auto-scroll
+    userScrolledUpRef.current = false;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -243,7 +279,7 @@ export function ChatPage() {
       </div>
 
       {/* Message area */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
         {initialLoading ? (
           <div className="flex h-full items-center justify-center">
             <div className="flex flex-col items-center gap-3 text-slate-400">

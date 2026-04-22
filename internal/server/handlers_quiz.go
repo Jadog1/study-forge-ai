@@ -136,6 +136,8 @@ type generateQuizRequest struct {
 	QuestionType    string                       `json:"question_type"`
 	FocusedSections []string                     `json:"focused_sections"`
 	Tags            []string                     `json:"tags"`
+	UseOrchestrator bool                         `json:"use_orchestrator"`
+	CandidateIDs    []string                     `json:"candidate_component_ids"`
 	Directives      []quiz.OrchestratorDirective `json:"directives"`
 }
 
@@ -164,12 +166,14 @@ func (s *Server) handleGenerateQuiz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := quiz.QuizOptions{
-		AssessmentKind:  req.AssessmentType,
-		Count:           req.Count,
-		TypePreference:  typePreference,
-		FocusedSections: req.FocusedSections,
-		Tags:            req.Tags,
-		Directives:      req.Directives,
+		AssessmentKind:        req.AssessmentType,
+		Count:                 req.Count,
+		TypePreference:        typePreference,
+		FocusedSections:       req.FocusedSections,
+		Tags:                  req.Tags,
+		UseOrchestrator:       req.UseOrchestrator,
+		CandidateComponentIDs: req.CandidateIDs,
+		Directives:            req.Directives,
 		ProviderOverrides: &quiz.QuizProviderOverrides{
 			Orchestrator: provider,
 			Component:    orchestrator.BuildProviderForRole("quiz_component", cfg),

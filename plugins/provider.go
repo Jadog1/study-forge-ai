@@ -4,6 +4,18 @@ package plugins
 
 import "time"
 
+// ChatMessage represents one role-tagged turn for providers with native chat APIs.
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ChatCompletionRequest carries a system instruction plus ordered chat turns.
+type ChatCompletionRequest struct {
+	System   string        `json:"system,omitempty"`
+	Messages []ChatMessage `json:"messages"`
+}
+
 // AIProvider is the common interface every AI backend must satisfy.
 // Implementations live in sub-packages: openai, claude, local.
 type AIProvider interface {
@@ -49,6 +61,18 @@ type UsageAwareAIProvider interface {
 	GenerateWithMetadata(prompt string) (GenerateResult, error)
 }
 
+// ChatAIProvider is an optional extension for providers with native chat APIs.
+type ChatAIProvider interface {
+	AIProvider
+	GenerateChat(request ChatCompletionRequest) (string, error)
+}
+
+// ChatUsageAwareAIProvider extends chat generation with metadata.
+type ChatUsageAwareAIProvider interface {
+	ChatAIProvider
+	GenerateChatWithMetadata(request ChatCompletionRequest) (GenerateResult, error)
+}
+
 // StreamingAIProvider is an optional extension interface for providers that
 // can emit text incrementally as it is generated.
 type StreamingAIProvider interface {
@@ -58,6 +82,12 @@ type StreamingAIProvider interface {
 	StreamGenerate(prompt string, onChunk func(string) error) error
 }
 
+// StreamingChatAIProvider streams responses for providers with native chat APIs.
+type StreamingChatAIProvider interface {
+	ChatAIProvider
+	StreamGenerateChat(request ChatCompletionRequest, onChunk func(string) error) error
+}
+
 // StreamingUsageAwareAIProvider extends streaming generation with usage
 // metadata for providers that can report token counts on streamed responses.
 type StreamingUsageAwareAIProvider interface {
@@ -65,6 +95,12 @@ type StreamingUsageAwareAIProvider interface {
 	// StreamGenerateWithMetadata streams chunks and returns a final generation
 	// result including usage and metadata when available.
 	StreamGenerateWithMetadata(prompt string, onChunk func(string) error) (GenerateResult, error)
+}
+
+// StreamingChatUsageAwareAIProvider extends streaming chat generation with metadata.
+type StreamingChatUsageAwareAIProvider interface {
+	StreamingChatAIProvider
+	StreamGenerateChatWithMetadata(request ChatCompletionRequest, onChunk func(string) error) (GenerateResult, error)
 }
 
 // EmbeddingProvider is an optional extension interface for providers that can

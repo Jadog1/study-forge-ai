@@ -50,6 +50,12 @@ type QuizOptions struct {
 	// Tags, when non-empty, restrict scoring to components whose section tags
 	// contain at least one matching tag.
 	Tags []string
+	// CandidateComponentIDs, when non-empty, restricts quiz generation to this
+	// exact component subset before orchestrator/candidate selection.
+	CandidateComponentIDs []string
+	// UseOrchestrator forces orchestrator planning even when explicit directives
+	// are supplied (useful for scoped selection-based quiz generation).
+	UseOrchestrator bool
 	// Directives, when non-empty, skip the orchestrator and use this explicit
 	// plan. This is useful for chat-driven quiz requests that already selected
 	// target components and exact counts.
@@ -102,6 +108,7 @@ func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIP
 	resolvedStore := resolveStore(store)
 
 	assessmentKind := classpkg.NormalizeContextProfile(opts.AssessmentKind)
+	useManualDirectives := len(opts.Directives) > 0 && !opts.UseOrchestrator
 	isFocused := assessmentKind == "focused"
 	noteRoster, _ := classpkg.LoadNoteRoster(class)
 	if opts.CoverageScope == nil && !isFocused {
@@ -130,7 +137,7 @@ func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIP
 	}
 
 	if opts.Count <= 0 {
-		if len(opts.Directives) > 0 {
+		if useManualDirectives {
 			opts.Count = sumDirectiveQuestionCount(opts.Directives)
 		}
 		if opts.Count <= 0 {
@@ -148,6 +155,26 @@ func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIP
 		return nil, "", fmt.Errorf("load component index: %w", err)
 	}
 	scores := ScoreComponents(class, secIdx, cmpIdx)
+	if len(opts.CandidateComponentIDs) > 0 {
+		allowed := make(map[string]bool, len(opts.CandidateComponentIDs))
+		for _, id := range opts.CandidateComponentIDs {
+			norm := strings.TrimSpace(id)
+			if norm == "" {
+				continue
+			}
+			allowed[norm] = true
+		}
+		filtered := make([]ComponentScore, 0, len(scores))
+		for _, s := range scores {
+			if allowed[s.Component.ID] {
+				filtered = append(filtered, s)
+			}
+		}
+		scores = filtered
+		if onProgress != nil {
+			onProgress(ProgressEvent{Label: "Apply selection scope", Detail: fmt.Sprintf("%d component(s)", len(scores)), Done: true})
+		}
+	}
 	if len(opts.Tags) > 0 {
 		filtered := make([]ComponentScore, 0, len(scores))
 		for _, s := range scores {
@@ -193,7 +220,7 @@ func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIP
 		}
 	}
 	candidates := scores
-	if len(opts.Directives) == 0 && !isFocused {
+	if !useManualDirectives && !isFocused {
 		candidates = SelectCandidatesDiversified(scores, opts.Count*3, candidateExplorationRate, nil)
 	}
 
@@ -203,7 +230,7 @@ func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIP
 
 	// ── 2. Quiz plan ─────────────────────────────────────────────────────────
 	var directives []OrchestratorDirective
-	if len(opts.Directives) > 0 {
+	if useManualDirectives {
 		directives, err = finalizeExplicitDirectives(opts.Directives, opts.Count, opts.TypePreference)
 		if err != nil {
 			return nil, "", fmt.Errorf("quiz plan: %w", err)

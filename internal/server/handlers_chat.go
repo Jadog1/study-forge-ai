@@ -48,7 +48,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	session, sessionErr := s.Store().Chat().LoadLatestChatSession()
 	if sessionErr == nil && session != nil && session.Class == req.Class && session.Mode == string(mode) {
 		// Use existing history if class and mode match
-		history = session.Messages
+		history = chat.SanitizeHistory(session.Messages)
 	}
 
 	flush := sseSetup(w)
@@ -83,10 +83,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	assistantText := chat.SanitizeAssistantResponse(assistantResponse.String())
+
 	// Append new messages to history
 	newMessages := append(history,
 		state.ChatMessage{Role: "user", Content: req.Message},
-		state.ChatMessage{Role: "assistant", Content: assistantResponse.String()},
+		state.ChatMessage{Role: "assistant", Content: assistantText},
 	)
 
 	_ = s.Store().Chat().SaveLatestChatSession(&state.ChatSession{
@@ -116,7 +118,7 @@ func (s *Server) handleGetLatestChat(w http.ResponseWriter, r *http.Request) {
 	resp := latestChatResponse{
 		Class:    session.Class,
 		Mode:     session.Mode,
-		Messages: session.Messages,
+		Messages: chat.SanitizeHistory(session.Messages),
 	}
 	if !session.UpdatedAt.IsZero() {
 		resp.UpdatedAt = session.UpdatedAt.UTC().Format(time.RFC3339)
