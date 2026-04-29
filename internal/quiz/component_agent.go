@@ -67,15 +67,7 @@ func runComponentQuestionAgent(
 			continue
 		}
 
-		// Backfill provenance from the directive when the AI omits it.
-		for i := range sections {
-			if sections[i].SectionID == "" {
-				sections[i].SectionID = dir.SectionID
-			}
-			if sections[i].ComponentID == "" {
-				sections[i].ComponentID = dir.ComponentID
-			}
-		}
+		sections = applyDirectiveProvenance(sections, dir)
 
 		if onProgress != nil {
 			onProgress(ProgressEvent{Label: label, Detail: fmt.Sprintf("%d question(s)", len(sections)), Done: true})
@@ -162,4 +154,18 @@ func truncateCmpContent(content string, maxLen int) string {
 		return content
 	}
 	return content[:maxLen] + "..."
+}
+
+func applyDirectiveProvenance(sections []state.QuizSection, dir OrchestratorDirective) []state.QuizSection {
+	sectionID := strings.TrimSpace(dir.SectionID)
+	componentID := strings.TrimSpace(dir.ComponentID)
+	for i := range sections {
+		if sectionID != "" {
+			sections[i].SectionID = sectionID
+		}
+		if componentID != "" {
+			sections[i].ComponentID = componentID
+		}
+	}
+	return sections
 }

@@ -135,6 +135,28 @@ func sumDirectiveQuestionCount(directives []OrchestratorDirective) int {
 	return total
 }
 
+func alignDirectiveToComponent(directive OrchestratorDirective, score ComponentScore) (OrchestratorDirective, bool) {
+	changed := false
+	expectedComponentID := strings.TrimSpace(score.Component.ID)
+	expectedSectionID := strings.TrimSpace(score.Section.ID)
+	expectedSectionTitle := strings.TrimSpace(score.Section.Title)
+
+	if expectedComponentID != "" && strings.TrimSpace(directive.ComponentID) != expectedComponentID {
+		directive.ComponentID = expectedComponentID
+		changed = true
+	}
+	if expectedSectionID != "" && strings.TrimSpace(directive.SectionID) != expectedSectionID {
+		directive.SectionID = expectedSectionID
+		changed = true
+	}
+	if expectedSectionTitle != "" && strings.TrimSpace(directive.SectionTitle) != expectedSectionTitle {
+		directive.SectionTitle = expectedSectionTitle
+		changed = true
+	}
+
+	return directive, changed
+}
+
 func cleanYAML(resp string) string {
 	s := strings.TrimSpace(resp)
 	if strings.HasPrefix(s, "```yaml") {

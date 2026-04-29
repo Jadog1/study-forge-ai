@@ -16,6 +16,8 @@ func normalizeQuizProvenance(q *state.Quiz) {
 		return
 	}
 	for i := range q.Sections {
+		q.Sections[i].SectionID = strings.TrimSpace(q.Sections[i].SectionID)
+		q.Sections[i].ComponentID = strings.TrimSpace(q.Sections[i].ComponentID)
 		sectionIDFromTag, componentIDFromTag := extractProvenanceFromTags(q.Sections[i].Tags)
 		if strings.TrimSpace(q.Sections[i].SectionID) == "" {
 			q.Sections[i].SectionID = sectionIDFromTag
@@ -23,12 +25,7 @@ func normalizeQuizProvenance(q *state.Quiz) {
 		if strings.TrimSpace(q.Sections[i].ComponentID) == "" {
 			q.Sections[i].ComponentID = componentIDFromTag
 		}
-		if q.Sections[i].SectionID != "" && !hasPrefixedTag(q.Sections[i].Tags, provenanceTagSectionPrefix, q.Sections[i].SectionID) {
-			q.Sections[i].Tags = append(q.Sections[i].Tags, provenanceTagSectionPrefix+q.Sections[i].SectionID)
-		}
-		if q.Sections[i].ComponentID != "" && !hasPrefixedTag(q.Sections[i].Tags, provenanceTagComponentPrefix, q.Sections[i].ComponentID) {
-			q.Sections[i].Tags = append(q.Sections[i].Tags, provenanceTagComponentPrefix+q.Sections[i].ComponentID)
-		}
+		q.Sections[i].Tags = canonicalizeProvenanceTags(q.Sections[i].Tags, q.Sections[i].SectionID, q.Sections[i].ComponentID)
 	}
 }
 
@@ -45,12 +42,23 @@ func extractProvenanceFromTags(tags []string) (sectionID, componentID string) {
 	return sectionID, componentID
 }
 
-func hasPrefixedTag(tags []string, prefix, value string) bool {
-	needle := strings.ToLower(strings.TrimSpace(prefix + value))
+func canonicalizeProvenanceTags(tags []string, sectionID, componentID string) []string {
+	sectionID = strings.TrimSpace(sectionID)
+	componentID = strings.TrimSpace(componentID)
+	filtered := make([]string, 0, len(tags)+2)
 	for _, tag := range tags {
-		if strings.ToLower(strings.TrimSpace(tag)) == needle {
-			return true
+		normalized := strings.TrimSpace(tag)
+		lowered := strings.ToLower(normalized)
+		if strings.HasPrefix(lowered, provenanceTagSectionPrefix) || strings.HasPrefix(lowered, provenanceTagComponentPrefix) {
+			continue
 		}
+		filtered = append(filtered, normalized)
 	}
-	return false
+	if sectionID != "" {
+		filtered = append(filtered, provenanceTagSectionPrefix+sectionID)
+	}
+	if componentID != "" {
+		filtered = append(filtered, provenanceTagComponentPrefix+componentID)
+	}
+	return filtered
 }

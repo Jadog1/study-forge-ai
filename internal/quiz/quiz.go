@@ -291,11 +291,11 @@ func NewQuizStreamWithStore(class string, opts QuizOptions, provider plugins.AIP
 			}
 			continue
 		}
-		if strings.TrimSpace(d.SectionID) == "" {
-			d.SectionID = cs.Section.ID
-		}
-		if strings.TrimSpace(d.SectionTitle) == "" {
-			d.SectionTitle = cs.Section.Title
+		if aligned, changed := alignDirectiveToComponent(d, cs); changed {
+			if onProgress != nil {
+				onProgress(ProgressEvent{Label: "Quiz plan", Detail: fmt.Sprintf("aligned directive provenance for component %s", aligned.ComponentID), Done: true})
+			}
+			d = aligned
 		}
 		sections, agentErr := runComponentQuestionAgent(assessmentKind, classProfileContext, d, cs, cmpProvider, cfg, resolvedStore.Usage(), onProgress)
 		if agentErr != nil {

@@ -152,6 +152,83 @@ func TestNormalizeQuizProvenance_AddsMissingPrefixedTags(t *testing.T) {
 	}
 }
 
+func TestNormalizeQuizProvenance_ReplacesConflictingPrefixedTags(t *testing.T) {
+	q := &state.Quiz{
+		Sections: []state.QuizSection{
+			{
+				ID:          "q-001",
+				Question:    "What is gradient descent?",
+				SectionID:   "sec-opt",
+				ComponentID: "cmp-opt",
+				Tags: []string{
+					"optimization",
+					"src_section:sec-old",
+					"src_component:cmp-old",
+				},
+			},
+		},
+	}
+
+	normalizeQuizProvenance(q)
+
+	if hasTag(q.Sections[0].Tags, "src_section:sec-old") {
+		t.Fatalf("expected stale section provenance tag to be removed, got %#v", q.Sections[0].Tags)
+	}
+	if hasTag(q.Sections[0].Tags, "src_component:cmp-old") {
+		t.Fatalf("expected stale component provenance tag to be removed, got %#v", q.Sections[0].Tags)
+	}
+	if !hasTag(q.Sections[0].Tags, "src_section:sec-opt") {
+		t.Fatalf("expected canonical section provenance tag, got %#v", q.Sections[0].Tags)
+	}
+	if !hasTag(q.Sections[0].Tags, "src_component:cmp-opt") {
+		t.Fatalf("expected canonical component provenance tag, got %#v", q.Sections[0].Tags)
+	}
+}
+
+func TestApplyDirectiveProvenance_OverridesMismatchedIDs(t *testing.T) {
+	sections := []state.QuizSection{{
+		ID:          "q-001",
+		SectionID:   "sec-old",
+		ComponentID: "cmp-old",
+		Question:    "Placeholder",
+	}}
+	dir := OrchestratorDirective{SectionID: "sec-new", ComponentID: "cmp-new"}
+
+	updated := applyDirectiveProvenance(sections, dir)
+	if got := updated[0].SectionID; got != "sec-new" {
+		t.Fatalf("expected section id override, got %q", got)
+	}
+	if got := updated[0].ComponentID; got != "cmp-new" {
+		t.Fatalf("expected component id override, got %q", got)
+	}
+}
+
+func TestAlignDirectiveToComponent_UsesCanonicalSectionMetadata(t *testing.T) {
+	directive := OrchestratorDirective{
+		ComponentID:  "cmp-1",
+		SectionID:    "sec-wrong",
+		SectionTitle: "Wrong",
+	}
+	score := ComponentScore{
+		Component: state.Component{ID: "cmp-1"},
+		Section: state.Section{
+			ID:    "sec-right",
+			Title: "Correct Section",
+		},
+	}
+
+	aligned, changed := alignDirectiveToComponent(directive, score)
+	if !changed {
+		t.Fatal("expected directive alignment to report changes")
+	}
+	if got := aligned.SectionID; got != "sec-right" {
+		t.Fatalf("expected section id to align to component section, got %q", got)
+	}
+	if got := aligned.SectionTitle; got != "Correct Section" {
+		t.Fatalf("expected section title to align to component section, got %q", got)
+	}
+}
+
 func hasTag(tags []string, want string) bool {
 	for _, tag := range tags {
 		if strings.EqualFold(strings.TrimSpace(tag), want) {
